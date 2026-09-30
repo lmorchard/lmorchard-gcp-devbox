@@ -141,7 +141,7 @@ GO_VERSION="1.23.1"
 curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
 tar -C /usr/local -xzf /tmp/go.tar.gz
 rm -f /tmp/go.tar.gz
-ln -sf /usr/local/go/bin/go /usr/local/go/bin/go
+ln -sf /usr/local/go/bin/go /usr/local/bin/go
 ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 
 # 7. Install Agent Toolchains (Claude Code, Codex, Opencode)
