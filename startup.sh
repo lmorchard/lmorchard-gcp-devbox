@@ -73,7 +73,27 @@ fi
 # Enable systemd user lingering so user services/tmux stay alive after logout
 loginctl enable-linger "${DEV_USER}"
 
-# 3. Docker Installation
+# 3. Google Cloud CLI (gcloud)
+if ! command -v gcloud >/dev/null 2>&1; then
+  set_stage "installing-gcloud-cli"
+  echo "==> Installing Google Cloud CLI..."
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /etc/apt/keyrings/cloud.google.gpg
+  chmod a+r /etc/apt/keyrings/cloud.google.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+  apt-get update -y
+  apt-get install -y google-cloud-cli
+else
+  echo "==> Google Cloud CLI already installed."
+fi
+
+# Configure default gcloud project for dev user if available
+GCP_PROJECT_ID=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/project/project-id" 2>/dev/null || true)
+if [[ -n "${GCP_PROJECT_ID}" ]]; then
+  sudo -u "${DEV_USER}" gcloud config set project "${GCP_PROJECT_ID}" 2>/dev/null || true
+fi
+
+# 4. Docker Installation
 if ! command -v docker >/dev/null 2>&1; then
   set_stage "installing-docker"
   echo "==> Installing Docker CE..."
@@ -275,7 +295,7 @@ OPENAI_KEY=$(get_secret "openai-api-key")
 mkdir -p "${DEV_HOME}/.profile.d"
 cat <<'EOF' > "${DEV_HOME}/.profile.d/agent-env.sh"
 # Added by devbox startup
-export PATH="$HOME/.local/bin:$HOME/bin:$HOME/.opencode/bin:/usr/local/go/bin:$PATH"
+export PATH="$HOME/.local/bin:$HOME/bin:$HOME/.opencode/bin:/usr/local/go/bin:/snap/bin:$PATH"
 EOF
 
 if [[ -n "${ANTHROPIC_KEY}" ]]; then
@@ -388,7 +408,7 @@ ExecStart=${WIDEBOI_EXEC}
 Restart=always
 RestartSec=5
 EnvironmentFile=-%h/.profile.d/agent-env.sh
-Environment="PATH=%h/.local/bin:%h/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
+Environment="PATH=%h/.local/bin:%h/bin:%h/.opencode/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin"
 
 [Install]
 WantedBy=default.target

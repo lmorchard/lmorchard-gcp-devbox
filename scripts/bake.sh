@@ -97,7 +97,19 @@ groupadd -f docker
 usermod -aG docker "${DEV_USER}"
 systemctl enable docker
 
-# 4. Tailscale package installation
+# 4. Google Cloud CLI (gcloud)
+if ! command -v gcloud >/dev/null 2>&1; then
+  set_bake_stage "installing-gcloud-cli"
+  echo "==> Installing Google Cloud CLI..."
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /etc/apt/keyrings/cloud.google.gpg
+  chmod a+r /etc/apt/keyrings/cloud.google.gpg
+  echo "deb [signed-by=/etc/apt/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+  apt-get update -y
+  apt-get install -y google-cloud-cli
+fi
+
+# 5. Tailscale package installation
 set_bake_stage "installing-tailscale"
 echo "==> [4/10] Installing Tailscale..."
 curl -fsSL https://tailscale.com/install.sh | sh
