@@ -7,7 +7,8 @@
 #
 set -euo pipefail
 
-DEV_USER="lmorchard"
+DEV_USER=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/dev-user" 2>/dev/null || echo "lmorchard")
+DEV_USER="${DEV_USER:-lmorchard}"
 DEV_HOME="/home/${DEV_USER}"
 LOG_FILE="/var/log/startup-script.log"
 exec > >(tee -a "${LOG_FILE}") 2>&1
@@ -27,24 +28,28 @@ set_stage() {
     "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/devbox/stage" 2>/dev/null || true
 }
 
-set_stage "installing-base-packages"
 # 1. Base packages
-echo "==> [1/9] Installing base apt packages..."
-apt-get update -y
-apt-get install -y --no-install-recommends \
-  apt-transport-https \
-  ca-certificates \
-  curl \
-  gnupg \
-  git \
-  build-essential \
-  tmux \
-  zsh \
-  jq \
-  unzip \
-  ripgrep \
-  fd-find \
-  htop
+if ! command -v git >/dev/null 2>&1 || ! command -v zsh >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
+  set_stage "installing-base-packages"
+  echo "==> [1/9] Installing base apt packages..."
+  apt-get update -y
+  apt-get install -y --no-install-recommends \
+    apt-transport-https \
+    ca-certificates \
+    curl \
+    gnupg \
+    git \
+    build-essential \
+    tmux \
+    zsh \
+    jq \
+    unzip \
+    ripgrep \
+    fd-find \
+    htop
+else
+  echo "==> [1/9] Base apt packages already installed."
+fi
 
 # 2. Ensure user exists with zsh shell and sudo rights
 echo "==> [2/9] Configuring user '${DEV_USER}'..."
@@ -52,31 +57,37 @@ if ! id -u "${DEV_USER}" >/dev/null 2>&1; then
   useradd -m -s /bin/zsh "${DEV_USER}"
 fi
 usermod -aG sudo "${DEV_USER}"
-echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-${DEV_USER}"
-chmod 0440 "/etc/sudoers.d/90-${DEV_USER}"
+if [[ ! -f "/etc/sudoers.d/90-${DEV_USER}" ]]; then
+  echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-${DEV_USER}"
+  chmod 0440 "/etc/sudoers.d/90-${DEV_USER}"
+fi
 
 # Enable systemd user lingering so user services/tmux stay alive after logout
 loginctl enable-linger "${DEV_USER}"
 
 # 3. Docker Installation
-set_stage "installing-docker"
-echo "==> Installing Docker CE..."
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
-chmod a+r /etc/apt/keyrings/docker.asc
+if ! command -v docker >/dev/null 2>&1; then
+  set_stage "installing-docker"
+  echo "==> Installing Docker CE..."
+  install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+  chmod a+r /etc/apt/keyrings/docker.asc
 
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
-  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
-  tee /etc/apt/sources.list.d/docker.list > /dev/null
+  echo \
+    "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+    $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+    tee /etc/apt/sources.list.d/docker.list > /dev/null
 
-apt-get update -y
-apt-get install -y --no-install-recommends \
-  docker-ce \
-  docker-ce-cli \
-  containerd.io \
-  docker-buildx-plugin \
-  docker-compose-plugin
+  apt-get update -y
+  apt-get install -y --no-install-recommends \
+    docker-ce \
+    docker-ce-cli \
+    containerd.io \
+    docker-buildx-plugin \
+    docker-compose-plugin
+else
+  echo "==> Docker CE already installed."
+fi
 
 # Ensure docker group exists and user is added
 groupadd -f docker
@@ -101,17 +112,21 @@ if [[ -n "${SSH_PUBKEY}" ]]; then
 fi
 
 # 4. Tailscale Setup
-set_stage "installing-tailscale"
-echo "==> [3/9] Installing Tailscale..."
-curl -fsSL https://tailscale.com/install.sh | sh
+if ! command -v tailscale >/dev/null 2>&1; then
+  set_stage "installing-tailscale"
+  echo "==> [3/9] Installing Tailscale..."
+  curl -fsSL https://tailscale.com/install.sh | sh
+else
+  echo "==> [3/9] Tailscale package already installed."
+fi
 systemctl enable --now tailscaled
 
 TS_AUTHKEY=$(get_secret "tailscale-auth-key")
 
 # 5. GitHub CLI & Auth
-set_stage "installing-github-cli"
-echo "==> [4/9] Installing GitHub CLI..."
 if ! command -v gh >/dev/null 2>&1; then
+  set_stage "installing-github-cli"
+  echo "==> [4/9] Installing GitHub CLI..."
   curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
   chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
   echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
@@ -127,50 +142,68 @@ if [[ -n "${GH_PAT}" ]]; then
 fi
 
 # 6. Install Node.js & Go
-set_stage "installing-node-and-go"
-echo "==> [5/9] Installing Node.js LTS and Go..."
-# Node 20.x
-if ! command -v node >/dev/null 2>&1; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt-get install -y nodejs
-fi
+if ! command -v node >/dev/null 2>&1 || ! command -v go >/dev/null 2>&1; then
+  set_stage "installing-node-and-go"
+  echo "==> [5/9] Installing Node.js LTS and Go..."
+  # Node 20.x
+  if ! command -v node >/dev/null 2>&1; then
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+    apt-get install -y nodejs
+  fi
 
-# Go (latest stable via snap or tarball)
-if ! command -v go >/dev/null 2>&1; then
-  GO_VERSION="1.23.1"
-  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
-  tar -C /usr/local -xzf /tmp/go.tar.gz
-  rm /tmp/go.tar.gz
-  ln -sf /usr/local/go/bin/go /usr/local/bin/go
-  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  # Go (latest stable via snap or tarball)
+  if ! command -v go >/dev/null 2>&1; then
+    GO_VERSION="1.23.1"
+    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
+    tar -C /usr/local -xzf /tmp/go.tar.gz
+    rm /tmp/go.tar.gz
+    ln -sf /usr/local/go/bin/go /usr/local/bin/go
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+  fi
+else
+  echo "==> [5/9] Node.js and Go already installed."
 fi
 
 # 7. Install Agent Toolchains (Claude Code, Opencode, Codex)
-set_stage "installing-agent-clis"
-echo "==> [6/9] Installing Agent CLIs..."
-# Claude Code CLI
-npm install -g @anthropic-ai/claude-code || true
+if ! command -v claude >/dev/null 2>&1 || ! command -v codex >/dev/null 2>&1 || ! command -v opencode >/dev/null 2>&1; then
+  set_stage "installing-agent-clis"
+  echo "==> [6/9] Installing Agent CLIs..."
+  # Claude Code CLI
+  if ! command -v claude >/dev/null 2>&1; then
+    npm install -g @anthropic-ai/claude-code || true
+  fi
 
-# Codex CLI
-npm install -g @openai/codex || true
+  # Codex CLI
+  if ! command -v codex >/dev/null 2>&1; then
+    npm install -g @openai/codex || true
+  fi
 
-# Opencode CLI (official installer)
-HOME="${DEV_HOME}" SHELL="/bin/zsh" curl -fsSL https://opencode.ai/install | HOME="${DEV_HOME}" SHELL="/bin/zsh" bash || true
-if [[ -f "${DEV_HOME}/.opencode/bin/opencode" ]]; then
-  install -m 0755 "${DEV_HOME}/.opencode/bin/opencode" /usr/local/bin/opencode
-elif [[ -f "/root/.opencode/bin/opencode" ]]; then
-  install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode
+  # Opencode CLI (official installer)
+  if ! command -v opencode >/dev/null 2>&1; then
+    HOME="${DEV_HOME}" SHELL="/bin/zsh" curl -fsSL https://opencode.ai/install | HOME="${DEV_HOME}" SHELL="/bin/zsh" bash || true
+    if [[ -f "${DEV_HOME}/.opencode/bin/opencode" ]]; then
+      install -m 0755 "${DEV_HOME}/.opencode/bin/opencode" /usr/local/bin/opencode
+    elif [[ -f "/root/.opencode/bin/opencode" ]]; then
+      install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode
+    fi
+  fi
+else
+  echo "==> [6/9] Agent CLIs already installed."
 fi
 
 # 8. Install Wideboi (latest rolling release)
-set_stage "installing-wideboi"
-echo "==> [7/9] Downloading and installing Wideboi rolling release..."
-WIDEBOI_RELEASE_URL="https://github.com/lmorchard/wideboi/releases/download/rolling/wideboi_rolling_linux_amd64.tar.gz"
-mkdir -p /tmp/wideboi-install
-curl -fsSL "${WIDEBOI_RELEASE_URL}" -o /tmp/wideboi-install/wideboi.tar.gz
-tar -C /tmp/wideboi-install -xzf /tmp/wideboi-install/wideboi.tar.gz
-install -m 0755 /tmp/wideboi-install/wideboi /usr/local/bin/wideboi
-rm -rf /tmp/wideboi-install
+if [[ ! -x /usr/local/bin/wideboi ]]; then
+  set_stage "installing-wideboi"
+  echo "==> [7/9] Downloading and installing Wideboi rolling release..."
+  WIDEBOI_RELEASE_URL="https://github.com/lmorchard/wideboi/releases/download/rolling/wideboi_rolling_linux_amd64.tar.gz"
+  mkdir -p /tmp/wideboi-install
+  curl -fsSL "${WIDEBOI_RELEASE_URL}" -o /tmp/wideboi-install/wideboi.tar.gz
+  tar -C /tmp/wideboi-install -xzf /tmp/wideboi-install/wideboi.tar.gz
+  install -m 0755 /tmp/wideboi-install/wideboi /usr/local/bin/wideboi
+  rm -rf /tmp/wideboi-install
+else
+  echo "==> [7/9] Wideboi already installed."
+fi
 
 # 9. Set up User Dotfiles and Shell
 set_stage "setting-up-dotfiles"
@@ -370,7 +403,8 @@ AUTO_STOP_HOURS="${AUTO_STOP_HOURS:-2}"
 if [[ "${AUTO_STOP_HOURS}" -gt 0 ]]; then
   echo "export AUTO_STOP_HOURS=\"${AUTO_STOP_HOURS}\"" >> "${DEV_HOME}/.profile.d/agent-env.sh"
 
-  cat <<'EOF' > /usr/local/bin/devbox-idle-watchdog
+  if [[ ! -x /usr/local/bin/devbox-idle-watchdog ]]; then
+    cat <<'EOF' > /usr/local/bin/devbox-idle-watchdog
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -495,9 +529,11 @@ if [[ "${IDLE_SECONDS}" -ge "${IDLE_LIMIT_SECONDS}" ]]; then
 fi
 EOF
 
-  chmod 0755 /usr/local/bin/devbox-idle-watchdog
+    chmod 0755 /usr/local/bin/devbox-idle-watchdog
+  fi
 
-  cat <<'EOF' > /etc/systemd/system/devbox-idle-watchdog.service
+  if [[ ! -f /etc/systemd/system/devbox-idle-watchdog.service ]]; then
+    cat <<'EOF' > /etc/systemd/system/devbox-idle-watchdog.service
 [Unit]
 Description=Devbox Idle Auto-Stop Watchdog
 After=network.target
@@ -509,7 +545,7 @@ StandardOutput=journal
 StandardError=journal
 EOF
 
-  cat <<'EOF' > /etc/systemd/system/devbox-idle-watchdog.timer
+    cat <<'EOF' > /etc/systemd/system/devbox-idle-watchdog.timer
 [Unit]
 Description=Run Devbox Idle Watchdog periodically
 After=network.target
@@ -522,6 +558,7 @@ AccuracySec=1min
 [Install]
 WantedBy=timers.target
 EOF
+  fi
 
   systemctl daemon-reload
   systemctl enable --now devbox-idle-watchdog.timer
