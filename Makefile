@@ -58,7 +58,7 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets up down stop start status ssh web logs clean bake-image list-images clean-images
+.PHONY: help init-secrets up do-up down stop start status ssh web logs clean bake-image list-images clean-images
 
 help:
 	@echo "wideboi-sandbox management commands:"
@@ -265,7 +265,40 @@ clean-images: check-project
 	fi
 
 # 4. Spin up ephemeral VM
-up: check-project init-secrets ensure-network ensure-sa
+up: check-project
+	@STATUS=$$(gcloud compute instances describe $(INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --format="value(status)" 2>/dev/null || true); \
+	if [ -n "$$STATUS" ]; then \
+		if [ "$$STATUS" = "RUNNING" ]; then \
+			stage=$$(gcloud compute instances get-guest-attributes $(INSTANCE_NAME) \
+				--project=$(PROJECT_ID) --zone=$(ZONE) \
+				--query-path="devbox/stage" \
+				--format="value(value)" 2>/dev/null || true); \
+			if [ "$$stage" != "ready" ]; then \
+				echo "==> Instance '$(INSTANCE_NAME)' is already running (bootstrap stage: $${stage:-starting}). Resuming progress tracking..."; \
+				$(MAKE) wait-ready; \
+				exit 0; \
+			else \
+				echo "==> Instance '$(INSTANCE_NAME)' is already running and ready!"; \
+				echo "    SSH:     make ssh (or: ssh $(DEV_USER)@$(TAILSCALE_HOSTNAME))"; \
+				echo "    Web UI:  make web (or: http://$(TAILSCALE_HOSTNAME):8080)"; \
+				echo "    Status:  make status"; \
+				echo "    Down:    make down (to destroy and recreate)"; \
+				exit 0; \
+			fi; \
+		elif [ "$$STATUS" = "TERMINATED" ] || [ "$$STATUS" = "STOPPED" ]; then \
+			echo "==> Instance '$(INSTANCE_NAME)' already exists but is stopped (status: $$STATUS)."; \
+			echo "    Start:   make start (to resume)"; \
+			echo "    Down:    make down (to destroy and recreate)"; \
+			exit 1; \
+		else \
+			echo "==> Instance '$(INSTANCE_NAME)' already exists with status: $$STATUS."; \
+			echo "    Wait a moment or run 'make down' to recreate."; \
+			exit 1; \
+		fi; \
+	fi; \
+	$(MAKE) do-up
+
+do-up: init-secrets ensure-network ensure-sa
 	@echo "==> Launching $(INSTANCE_NAME) in $(ZONE)..."
 	@echo "    Using image: $(IMAGE_FAMILY) (project: $(IMAGE_PROJECT))"
 	gcloud compute instances create $(INSTANCE_NAME) \
