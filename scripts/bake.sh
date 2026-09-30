@@ -212,6 +212,9 @@ curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" -o /tm
 install -m 0755 /tmp/kind /usr/local/bin/kind
 rm -f /tmp/kind
 
+echo "==> Installing Tilt..."
+curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+
 echo "==> Installing python evaluation tools (fuzzfetch, pytest, pyyaml)..."
 pip install --break-system-packages pytest PyYAML fuzzfetch || true
 
@@ -271,6 +274,16 @@ if [[ -S "${WB_SOCK}" ]] && command -v wideboi >/dev/null 2>&1; then
   if [[ "${WB_WORKING_PANES}" -gt 0 ]]; then
     is_active=1
     active_reasons+=("wideboi-panes-working:${WB_WORKING_PANES}")
+  fi
+fi
+
+# 3b. Active Docker containers (e.g. Zoo stacks, kind clusters)
+if command -v docker >/dev/null 2>&1; then
+  RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | wc -l || echo 0)
+  RUNNING_CONTAINERS=$(echo "${RUNNING_CONTAINERS}" | tr -d ' ')
+  if [[ "${RUNNING_CONTAINERS}" -gt 0 ]]; then
+    is_active=1
+    active_reasons+=("docker-containers-running:${RUNNING_CONTAINERS}")
   fi
 fi
 

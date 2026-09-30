@@ -287,6 +287,12 @@ if ! command -v kind >/dev/null 2>&1; then
   rm -f /tmp/kind
 fi
 
+if ! command -v tilt >/dev/null 2>&1; then
+  set_stage "installing-tilt"
+  echo "==> Installing Tilt..."
+  curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
+fi
+
 if ! command -v fuzzfetch >/dev/null 2>&1; then
   echo "==> Installing python evaluation tools (fuzzfetch, pytest, pyyaml)..."
   pip install --break-system-packages pytest PyYAML fuzzfetch || true
@@ -323,12 +329,26 @@ sudo -u "${DEV_USER}" bash -c "
 # Inject API keys or Claude creds if present in Secret Manager
 CLAUDE_JSON=$(get_secret "claude-credentials-json")
 if [[ -n "${CLAUDE_JSON}" ]]; then
-  # Note: ~/.claude is a symlink to ~/.dotfiles/.claude
-  mkdir -p "${DEV_HOME}/.dotfiles/.claude"
+  mkdir -p "${DEV_HOME}/.dotfiles/.claude" "${DEV_HOME}/.claude"
   echo "${CLAUDE_JSON}" > "${DEV_HOME}/.dotfiles/.claude/.credentials.json"
-  chmod 600 "${DEV_HOME}/.dotfiles/.claude/.credentials.json"
-  chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.dotfiles/.claude"
+  echo "${CLAUDE_JSON}" > "${DEV_HOME}/.claude/.credentials.json"
+  chmod 600 "${DEV_HOME}/.dotfiles/.claude/.credentials.json" "${DEV_HOME}/.claude/.credentials.json"
+  chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.dotfiles/.claude" "${DEV_HOME}/.claude"
 fi
+
+# Configure user-level MCP servers (e.g. Linear) in ~/.claude.json
+sudo -u "${DEV_USER}" node -e '
+  const fs = require("fs");
+  const p = "'"${DEV_HOME}"'/.claude.json";
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch (_) {}
+  cfg.mcpServers = cfg.mcpServers || {};
+  cfg.mcpServers["linear-server"] = cfg.mcpServers["linear-server"] || {
+    type: "http",
+    url: "https://mcp.linear.app/mcp"
+  };
+  fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+' 2>/dev/null || true
 
 # Inject Opencode configuration if present
 OPENCODE_CONFIG=$(get_secret "opencode-config-jsonc")
@@ -558,6 +578,16 @@ if [[ -S "${WB_SOCK}" ]] && command -v wideboi >/dev/null 2>&1; then
   if [[ "${WB_WORKING_PANES}" -gt 0 ]]; then
     is_active=1
     active_reasons+=("wideboi-panes-working:${WB_WORKING_PANES}")
+  fi
+fi
+
+# 3b. Active Docker containers (e.g. Zoo stacks, kind clusters)
+if command -v docker >/dev/null 2>&1; then
+  RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | wc -l || echo 0)
+  RUNNING_CONTAINERS=$(echo "${RUNNING_CONTAINERS}" | tr -d ' ')
+  if [[ "${RUNNING_CONTAINERS}" -gt 0 ]]; then
+    is_active=1
+    active_reasons+=("docker-containers-running:${RUNNING_CONTAINERS}")
   fi
 fi
 

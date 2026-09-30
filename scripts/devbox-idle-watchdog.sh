@@ -77,6 +77,18 @@ if [[ -S "${WB_SOCK}" ]] && command -v wideboi >/dev/null 2>&1; then
 fi
 
 # ------------------------------------------------------------------------------
+# 3b. Check for active Docker containers (e.g. Zoo stacks, kind clusters)
+# ------------------------------------------------------------------------------
+if command -v docker >/dev/null 2>&1; then
+  RUNNING_CONTAINERS=$(docker ps -q 2>/dev/null | wc -l || echo 0)
+  RUNNING_CONTAINERS=$(echo "${RUNNING_CONTAINERS}" | tr -d ' ')
+  if [[ "${RUNNING_CONTAINERS}" -gt 0 ]]; then
+    is_active=1
+    active_reasons+=("docker-containers-running:${RUNNING_CONTAINERS}")
+  fi
+fi
+
+# ------------------------------------------------------------------------------
 # 4. Check for active child processes spawned by agents
 # ------------------------------------------------------------------------------
 # Find PIDs for claude, opencode, codex
