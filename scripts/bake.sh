@@ -150,8 +150,10 @@ ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
 # 7. Install Agent Toolchains (Claude Code, Codex, Opencode)
 set_bake_stage "installing-agent-clis"
 echo "==> [7/10] Installing Agent CLIs..."
-npm install -g @anthropic-ai/claude-code
-npm install -g @openai/codex
+mkdir -p /usr/local/lib/node_modules
+chown -R "${DEV_USER}:${DEV_USER}" /usr/local/lib/node_modules /usr/local/bin
+sudo -u "${DEV_USER}" npm install -g @anthropic-ai/claude-code
+sudo -u "${DEV_USER}" npm install -g @openai/codex
 
 HOME="${DEV_HOME}" SHELL="/bin/zsh" curl -fsSL https://opencode.ai/install | HOME="${DEV_HOME}" SHELL="/bin/zsh" bash || true
 if [[ -f "${DEV_HOME}/.opencode/bin/opencode" ]]; then

@@ -207,17 +207,21 @@ else
 fi
 
 # 7. Install Agent Toolchains (Claude Code, Opencode, Codex)
+# Ensure /usr/local/lib/node_modules and /usr/local/bin are owned by DEV_USER so claude/codex can self-update
+mkdir -p /usr/local/lib/node_modules
+chown -R "${DEV_USER}:${DEV_USER}" /usr/local/lib/node_modules /usr/local/bin
+
 if ! command -v claude >/dev/null 2>&1 || ! command -v codex >/dev/null 2>&1 || ! command -v opencode >/dev/null 2>&1; then
   set_stage "installing-agent-clis"
   echo "==> [6/9] Installing Agent CLIs..."
   # Claude Code CLI
   if ! command -v claude >/dev/null 2>&1; then
-    npm install -g @anthropic-ai/claude-code || true
+    sudo -u "${DEV_USER}" npm install -g @anthropic-ai/claude-code || true
   fi
 
   # Codex CLI
   if ! command -v codex >/dev/null 2>&1; then
-    npm install -g @openai/codex || true
+    sudo -u "${DEV_USER}" npm install -g @openai/codex || true
   fi
 
   # Opencode CLI (official installer)
