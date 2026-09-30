@@ -60,7 +60,10 @@ apt-get install -y --no-install-recommends \
   unzip \
   ripgrep \
   fd-find \
-  htop
+  htop \
+  python3-pip \
+  python3-venv \
+  yamllint
 
 # 2. Configure developer user
 set_bake_stage "configuring-user"
@@ -97,16 +100,20 @@ groupadd -f docker
 usermod -aG docker "${DEV_USER}"
 systemctl enable docker
 
-# 4. Google Cloud CLI (gcloud)
-if ! command -v gcloud >/dev/null 2>&1; then
-  set_bake_stage "installing-gcloud-cli"
-  echo "==> Installing Google Cloud CLI..."
+# 4. Google Cloud CLI, GKE Auth Plugin, & Kubectl
+if ! command -v gcloud >/dev/null 2>&1 || ! command -v kubectl >/dev/null 2>&1 || ! command -v gke-gcloud-auth-plugin >/dev/null 2>&1; then
+  set_bake_stage "installing-gcloud-and-k8s"
+  echo "==> Installing Google Cloud CLI, GKE Auth Plugin, and Kubectl..."
   install -m 0755 -d /etc/apt/keyrings
-  curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /etc/apt/keyrings/cloud.google.gpg
-  chmod a+r /etc/apt/keyrings/cloud.google.gpg
-  echo "deb [signed-by=/etc/apt/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+  if [[ ! -f /etc/apt/keyrings/cloud.google.gpg ]]; then
+    curl -fsSL https://packages.cloud.google.com/apt/doc/apt-key.gpg | gpg --dearmor -o /etc/apt/keyrings/cloud.google.gpg
+    chmod a+r /etc/apt/keyrings/cloud.google.gpg
+  fi
+  if [[ ! -f /etc/apt/sources.list.d/google-cloud-sdk.list ]]; then
+    echo "deb [signed-by=/etc/apt/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | tee /etc/apt/sources.list.d/google-cloud-sdk.list > /dev/null
+  fi
   apt-get update -y
-  apt-get install -y google-cloud-cli
+  apt-get install -y google-cloud-cli google-cloud-cli-gke-gcloud-auth-plugin kubectl
 fi
 
 # 5. Tailscale package installation
@@ -124,10 +131,10 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githu
 apt-get update -y
 apt-get install -y gh
 
-# 6. Install Node.js 20 & Go
+# 6. Install Node.js 22 LTS & Go
 set_bake_stage "installing-node-and-go"
-echo "==> [6/10] Installing Node.js LTS and Go..."
-curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+echo "==> [6/10] Installing Node.js 22 LTS and Go..."
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
 apt-get install -y nodejs
 
 GO_VERSION="1.23.1"
@@ -173,6 +180,35 @@ curl -fsSL "${WIDEBOI_RELEASE_URL}" -o /tmp/wideboi-install/wideboi.tar.gz
 tar -C /tmp/wideboi-install -xzf /tmp/wideboi-install/wideboi.tar.gz
 install -m 0755 /tmp/wideboi-install/wideboi /usr/local/bin/wideboi
 rm -rf /tmp/wideboi-install
+
+# 8b. Install Cloud & Evaluation Tools (Terraform 1.15.2, Argo CLI 4.1.4, yq, fuzzfetch)
+set_bake_stage "installing-eval-tools"
+echo "==> Installing Terraform 1.15.2..."
+TERRAFORM_VERSION="1.15.2"
+curl -fsSL "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" -o /tmp/terraform.zip
+unzip -q -o /tmp/terraform.zip -d /usr/local/bin
+rm -f /tmp/terraform.zip
+chmod 0755 /usr/local/bin/terraform
+
+echo "==> Installing Argo CLI 4.1.4..."
+ARGO_VERSION="v4.1.4"
+curl -fsSL "https://github.com/argoproj/argo-workflows/releases/download/${ARGO_VERSION}/argo-linux-amd64.gz" -o /tmp/argo.gz
+gunzip -f /tmp/argo.gz
+install -m 0755 /tmp/argo /usr/local/bin/argo
+rm -f /tmp/argo
+
+echo "==> Installing yq..."
+curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
+chmod 0755 /usr/local/bin/yq
+
+echo "==> Installing kind..."
+KIND_VERSION="v0.33.0"
+curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" -o /tmp/kind
+install -m 0755 /tmp/kind /usr/local/bin/kind
+rm -f /tmp/kind
+
+echo "==> Installing python evaluation tools (fuzzfetch, pytest, pyyaml)..."
+pip install --break-system-packages pytest PyYAML fuzzfetch || true
 
 # 9. Install idle watchdog script and systemd units
 set_bake_stage "installing-idle-watchdog"
