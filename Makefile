@@ -39,6 +39,7 @@ TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 help:
 	@echo "wideboi-sandbox management commands:"
 	@echo "  make init-secrets  - Interactive wizard to populate GCP Secret Manager"
+	@echo "  make sync-secrets  - Push updated .env secrets to Secret Manager & running VM"
 	@echo "  make up            - Create and bootstrap the ephemeral VM"
 	@echo "  make ssh           - SSH into the VM via Tailscale (or fallback to gcloud)"
 	@echo "  make web           - Open Wideboi's web UI over Tailscale in your browser"
@@ -61,6 +62,21 @@ check-project:
 init-secrets: check-project
 	@chmod +x scripts/init-secrets.sh
 	@scripts/init-secrets.sh
+
+# Helper to find current Tailscale IP of the active instance
+get-ts-ip = $(shell tailscale status --json 2>/dev/null | jq -r '.Peer[] | select(.HostName | startswith("$(TAILSCALE_HOSTNAME)")) | select(.Online == true) | .TailscaleIPs[0]' | head -n1)
+
+# 1b. Sync secrets to Secret Manager and running VM in-place
+sync-secrets: init-secrets
+	@TS_IP="$(call get-ts-ip)"; \
+	TARGET="$${TS_IP:-$(TAILSCALE_HOSTNAME)}"; \
+	if tailscale ping --until-direct=false -c 1 "$$TARGET" >/dev/null 2>&1; then \
+		echo "==> Syncing updated secrets to active VM ($$TARGET)..."; \
+		chmod +x scripts/sync-secrets-to-vm.sh; \
+		scripts/sync-secrets-to-vm.sh "$$TARGET" "$(DEV_USER)" "$(PROJECT_ID)"; \
+	else \
+		echo "==> VM is not currently reachable over Tailscale. Secrets updated in Secret Manager only."; \
+	fi
 
 # 2. Network & Subnet Setup (dedicated VPC with internet gateway access)
 ensure-network: check-project

@@ -71,6 +71,11 @@ This creates the service account with required IAM roles and spins up an `e2-sta
   make upgrade-wideboi
   ```
   Pulls the latest rolling build from GitHub and runs `wideboi upgrade-server` in-place without closing panes or interrupting active agent sessions.
+- **Live Secret Syncing**:
+  ```bash
+  make sync-secrets
+  ```
+  Pushes updated values from `.env` (API keys, GitHub PAT, Tailscale keys, config files) to GCP Secret Manager and applies them directly to the active running VM without requiring a reboot.
 - **View Startup Progress**:
   ```bash
   make logs
