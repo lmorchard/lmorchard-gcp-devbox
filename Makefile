@@ -58,12 +58,14 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets up do-up down stop start status ssh web logs clean bake-image list-images clean-images
+.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images
 
 help:
 	@echo "wideboi-sandbox management commands:"
 	@echo "  make init-secrets  - Interactive wizard to populate GCP Secret Manager"
-	@echo "  make sync-secrets  - Push updated .env secrets to Secret Manager & running VM"
+	@echo "  make sync-secrets  - Push updated .env secrets & Claude memories to running VM"
+	@echo "  make push-memories - Sync local Claude global context & project memories to VM"
+	@echo "  make pull-memories - Pull updated Claude memories & journal from VM to local Mac"
 	@echo "  make bake-image    - Pre-bake custom GCE image in '$(CUSTOM_IMAGE_FAMILY)' family"
 	@echo "  make list-images   - List images in '$(CUSTOM_IMAGE_FAMILY)' family"
 	@echo "  make clean-images  - Delete older images in '$(CUSTOM_IMAGE_FAMILY)', keeping latest"
@@ -99,11 +101,27 @@ sync-secrets: init-secrets
 	TARGET="$${TS_IP:-$(TAILSCALE_HOSTNAME)}"; \
 	if tailscale ping --until-direct=false -c 1 "$$TARGET" >/dev/null 2>&1; then \
 		echo "==> Syncing updated secrets to active VM ($$TARGET)..."; \
-		chmod +x scripts/sync-secrets-to-vm.sh; \
+		chmod +x scripts/sync-secrets-to-vm.sh scripts/sync-claude.sh; \
 		scripts/sync-secrets-to-vm.sh "$$TARGET" "$(DEV_USER)" "$(PROJECT_ID)"; \
+		scripts/sync-claude.sh push "$$TARGET" "$(DEV_USER)"; \
 	else \
 		echo "==> VM is not currently reachable over Tailscale. Secrets updated in Secret Manager only."; \
 	fi
+
+# 1c. Sync Claude Code context & project memories (push/pull)
+push-memories: check-project
+	@TS_IP="$(call get-ts-ip)"; \
+	TARGET="$${TS_IP:-$(TAILSCALE_HOSTNAME)}"; \
+	chmod +x scripts/sync-claude.sh; \
+	scripts/sync-claude.sh push "$$TARGET" "$(DEV_USER)"
+
+pull-memories: check-project
+	@TS_IP="$(call get-ts-ip)"; \
+	TARGET="$${TS_IP:-$(TAILSCALE_HOSTNAME)}"; \
+	chmod +x scripts/sync-claude.sh; \
+	scripts/sync-claude.sh pull "$$TARGET" "$(DEV_USER)"
+
+sync-memories: push-memories
 
 # 2. Network & Subnet Setup (dedicated VPC with internet gateway access)
 ensure-network: check-project
