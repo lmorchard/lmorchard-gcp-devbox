@@ -1,0 +1,6 @@
+# List repos to clone under ~/devel on bootstrap (one per line, # comments allowed)
+# Format: <repo-slug> or <git-url>
+# Example:
+# lmorchard/wideboi
+# lmorchard/dotfiles
+# my-org/my-private-repo

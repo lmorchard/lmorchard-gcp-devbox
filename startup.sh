@@ -1,0 +1,359 @@
+#!/usr/bin/env bash
+#
+# startup.sh: GCP Compute Engine metadata startup script.
+# Runs as root on instance boot. Installs dependencies, configures
+# user account, fetches secrets, mounts Tailscale, sets up dotfiles,
+# installs agent CLIs, and launches Wideboi as a user service.
+#
+set -euo pipefail
+
+DEV_USER="lmorchard"
+DEV_HOME="/home/${DEV_USER}"
+LOG_FILE="/var/log/startup-script.log"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+
+echo "================================================================"
+echo "Starting Devbox Bootstrap: $(date -u)"
+echo "================================================================"
+
+export DEBIAN_FRONTEND=noninteractive
+
+# Helper to report progress to instance guest attributes
+set_stage() {
+  local stage="$1"
+  echo "==> STAGE: ${stage}"
+  curl -s -X PUT --data "${stage}" \
+    -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/devbox/stage" 2>/dev/null || true
+}
+
+set_stage "installing-base-packages"
+# 1. Base packages
+echo "==> [1/9] Installing base apt packages..."
+apt-get update -y
+apt-get install -y --no-install-recommends \
+  apt-transport-https \
+  ca-certificates \
+  curl \
+  gnupg \
+  git \
+  build-essential \
+  tmux \
+  zsh \
+  jq \
+  unzip \
+  ripgrep \
+  fd-find \
+  htop
+
+# 2. Ensure user exists with zsh shell and sudo rights
+echo "==> [2/9] Configuring user '${DEV_USER}'..."
+if ! id -u "${DEV_USER}" >/dev/null 2>&1; then
+  useradd -m -s /bin/zsh "${DEV_USER}"
+fi
+usermod -aG sudo "${DEV_USER}"
+echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-${DEV_USER}"
+chmod 0440 "/etc/sudoers.d/90-${DEV_USER}"
+
+# Enable systemd user lingering so user services/tmux stay alive after logout
+loginctl enable-linger "${DEV_USER}"
+
+# 3. Helper to fetch secrets from Secret Manager
+get_secret() {
+  local secret_name="$1"
+  gcloud secrets versions access latest --secret="${secret_name}" 2>/dev/null || true
+}
+
+# 3b. Install SSH public key if provided
+SSH_PUBKEY=$(get_secret "devbox-ssh-pubkey")
+if [[ -n "${SSH_PUBKEY}" ]]; then
+  echo "==> Configuring authorized_keys for '${DEV_USER}'..."
+  mkdir -p "${DEV_HOME}/.ssh"
+  echo "${SSH_PUBKEY}" >> "${DEV_HOME}/.ssh/authorized_keys"
+  chmod 700 "${DEV_HOME}/.ssh"
+  chmod 600 "${DEV_HOME}/.ssh/authorized_keys"
+  chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.ssh"
+fi
+
+# 4. Tailscale Setup
+set_stage "installing-tailscale"
+echo "==> [3/9] Installing Tailscale..."
+curl -fsSL https://tailscale.com/install.sh | sh
+systemctl enable --now tailscaled
+
+TS_AUTHKEY=$(get_secret "tailscale-auth-key")
+
+# 5. GitHub CLI & Auth
+set_stage "installing-github-cli"
+echo "==> [4/9] Installing GitHub CLI..."
+if ! command -v gh >/dev/null 2>&1; then
+  curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+  chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg
+  echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+  apt-get update -y
+  apt-get install -y gh
+fi
+
+GH_PAT=$(get_secret "github-pat")
+if [[ -n "${GH_PAT}" ]]; then
+  echo "==> Authenticating gh CLI..."
+  echo "${GH_PAT}" | sudo -u "${DEV_USER}" gh auth login --with-token || true
+  sudo -u "${DEV_USER}" gh auth setup-git || true
+fi
+
+# 6. Install Node.js & Go
+set_stage "installing-node-and-go"
+echo "==> [5/9] Installing Node.js LTS and Go..."
+# Node 20.x
+if ! command -v node >/dev/null 2>&1; then
+  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+  apt-get install -y nodejs
+fi
+
+# Go (latest stable via snap or tarball)
+if ! command -v go >/dev/null 2>&1; then
+  GO_VERSION="1.23.1"
+  curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
+  tar -C /usr/local -xzf /tmp/go.tar.gz
+  rm /tmp/go.tar.gz
+  ln -sf /usr/local/go/bin/go /usr/local/bin/go
+  ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+fi
+
+# 7. Install Agent Toolchains (Claude Code, Opencode, Codex)
+set_stage "installing-agent-clis"
+echo "==> [6/9] Installing Agent CLIs..."
+# Claude Code CLI
+npm install -g @anthropic-ai/claude-code || true
+
+# Codex CLI
+npm install -g @openai/codex || true
+
+# Opencode CLI (official installer)
+HOME="${DEV_HOME}" SHELL="/bin/zsh" curl -fsSL https://opencode.ai/install | HOME="${DEV_HOME}" SHELL="/bin/zsh" bash || true
+if [[ -f "${DEV_HOME}/.opencode/bin/opencode" ]]; then
+  install -m 0755 "${DEV_HOME}/.opencode/bin/opencode" /usr/local/bin/opencode
+elif [[ -f "/root/.opencode/bin/opencode" ]]; then
+  install -m 0755 /root/.opencode/bin/opencode /usr/local/bin/opencode
+fi
+
+# 8. Install Wideboi (latest rolling release)
+set_stage "installing-wideboi"
+echo "==> [7/9] Downloading and installing Wideboi rolling release..."
+WIDEBOI_RELEASE_URL="https://github.com/lmorchard/wideboi/releases/download/rolling/wideboi_rolling_linux_amd64.tar.gz"
+mkdir -p /tmp/wideboi-install
+curl -fsSL "${WIDEBOI_RELEASE_URL}" -o /tmp/wideboi-install/wideboi.tar.gz
+tar -C /tmp/wideboi-install -xzf /tmp/wideboi-install/wideboi.tar.gz
+install -m 0755 /tmp/wideboi-install/wideboi /usr/local/bin/wideboi
+rm -rf /tmp/wideboi-install
+
+# 9. Set up User Dotfiles and Shell
+set_stage "setting-up-dotfiles"
+echo "==> [8/9] Setting up dotfiles and user environment..."
+sudo -u "${DEV_USER}" bash -c "
+  set -e
+  # Clone oh-my-zsh if missing
+  if [[ ! -d \"${DEV_HOME}/.oh-my-zsh\" ]]; then
+    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git \"${DEV_HOME}/.oh-my-zsh\"
+  fi
+
+  # Clone dotfiles repo
+  if [[ ! -d \"${DEV_HOME}/.dotfiles\" ]]; then
+    git clone https://github.com/lmorchard/dotfiles.git \"${DEV_HOME}/.dotfiles\"
+  fi
+
+  # Run dotfiles setup
+  if [[ -x \"${DEV_HOME}/.dotfiles/script/setup\" ]]; then
+    \"${DEV_HOME}/.dotfiles/script/setup\" || true
+  fi
+
+  # Ensure git uses gh credential helper for github.com, overriding any stale vscode helper
+  git config --global credential.https://github.com.helper \"\"
+  git config --global --add credential.https://github.com.helper \"!gh auth git-credential\"
+
+  # Ensure user bin dirs exist in PATH
+  mkdir -p \"${DEV_HOME}/bin\" \"${DEV_HOME}/.local/bin\"
+"
+
+# Inject API keys or Claude creds if present in Secret Manager
+CLAUDE_JSON=$(get_secret "claude-credentials-json")
+if [[ -n "${CLAUDE_JSON}" ]]; then
+  # Note: ~/.claude is a symlink to ~/.dotfiles/.claude
+  mkdir -p "${DEV_HOME}/.dotfiles/.claude"
+  echo "${CLAUDE_JSON}" > "${DEV_HOME}/.dotfiles/.claude/.credentials.json"
+  chmod 600 "${DEV_HOME}/.dotfiles/.claude/.credentials.json"
+  chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.dotfiles/.claude"
+fi
+
+# Inject Opencode configuration if present
+OPENCODE_CONFIG=$(get_secret "opencode-config-jsonc")
+if [[ -n "${OPENCODE_CONFIG}" ]]; then
+  mkdir -p "${DEV_HOME}/.config/opencode"
+  echo "${OPENCODE_CONFIG}" > "${DEV_HOME}/.config/opencode/opencode.jsonc"
+  chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.config/opencode"
+fi
+
+# Inject Vertex SA key for Opencode if present
+VERTEX_SA_JSON=$(get_secret "vertex-sa-key-json")
+if [[ -n "${VERTEX_SA_JSON}" ]]; then
+  mkdir -p "${DEV_HOME}/.config/opencode"
+  echo "${VERTEX_SA_JSON}" > "${DEV_HOME}/.config/opencode/vertex-sa-key.json"
+  chmod 600 "${DEV_HOME}/.config/opencode/vertex-sa-key.json"
+  chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.config/opencode"
+fi
+
+ANTHROPIC_KEY=$(get_secret "anthropic-api-key")
+OPENAI_KEY=$(get_secret "openai-api-key")
+
+# Write environment secrets into /home/lmorchard/.profile.d/agent-env.sh
+mkdir -p "${DEV_HOME}/.profile.d"
+cat <<'EOF' > "${DEV_HOME}/.profile.d/agent-env.sh"
+# Added by devbox startup
+export PATH="$HOME/.local/bin:$HOME/bin:$HOME/.opencode/bin:/usr/local/go/bin:$PATH"
+EOF
+
+if [[ -n "${ANTHROPIC_KEY}" ]]; then
+  echo "export ANTHROPIC_API_KEY=\"${ANTHROPIC_KEY}\"" >> "${DEV_HOME}/.profile.d/agent-env.sh"
+fi
+if [[ -n "${OPENAI_KEY}" ]]; then
+  echo "export OPENAI_API_KEY=\"${OPENAI_KEY}\"" >> "${DEV_HOME}/.profile.d/agent-env.sh"
+fi
+
+# If vertex key was placed, configure Opencode Vertex environment variables
+if [[ -n "${VERTEX_SA_JSON}" ]]; then
+  VERTEX_PRJ=$(get_secret "vertex-project-id")
+  VERTEX_LOC=$(get_secret "vertex-location")
+  VERTEX_PRJ="${VERTEX_PRJ:-$(gcloud config get-value project 2>/dev/null || true)}"
+  VERTEX_LOC="${VERTEX_LOC:-global}"
+  cat <<EOF >> "${DEV_HOME}/.profile.d/agent-env.sh"
+export GOOGLE_APPLICATION_CREDENTIALS="\$HOME/.config/opencode/vertex-sa-key.json"
+export GOOGLE_CLOUD_PROJECT="${VERTEX_PRJ}"
+export GOOGLE_VERTEX_LOCATION="${VERTEX_LOC}"
+EOF
+fi
+chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.profile.d"
+
+# Ensure zshrc sources .profile.d and sets convenience aliases
+if ! grep -q "agent-env.sh" "${DEV_HOME}/.zshrc" 2>/dev/null; then
+  echo '[ -f "$HOME/.profile.d/agent-env.sh" ] && source "$HOME/.profile.d/agent-env.sh"' >> "${DEV_HOME}/.zshrc"
+fi
+
+# 10. Clone Workspace Repos and copy environment files
+set_stage "cloning-workspace-repos"
+echo "==> Setting up workspace repositories under ${DEV_HOME}/devel..."
+sudo -u "${DEV_USER}" mkdir -p "${DEV_HOME}/devel"
+
+REPOS_LIST=$(get_secret "workspace-repos-list")
+ENVS_B64=$(get_secret "workspace-repo-envs-b64")
+
+# Extract repo .env files to a staging directory if present
+if [[ -n "${ENVS_B64}" ]]; then
+  TMP_ENVS="/tmp/repo-envs"
+  mkdir -p "${TMP_ENVS}"
+  echo "${ENVS_B64}" | base64 -d | tar -C "${TMP_ENVS}" -xzf -
+fi
+
+CLONE_WARNINGS=""
+if [[ -n "${REPOS_LIST}" ]]; then
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    # Trim whitespace and skip comments/blank lines
+    repo=$(echo "${line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+    [[ -z "${repo}" || "${repo}" =~ ^# ]] && continue
+
+    repo_name=$(basename "${repo}" .git)
+    target_dir="${DEV_HOME}/devel/${repo_name}"
+
+    if [[ ! -d "${target_dir}" ]]; then
+      echo "  -> Cloning ${repo} into ${target_dir}..."
+      # If repo is "owner/repo", format as https://github.com/owner/repo.git
+      if [[ ! "${repo}" =~ ^https?:// ]] && [[ ! "${repo}" =~ ^git@ ]]; then
+        repo="https://github.com/${repo}.git"
+      fi
+      CLONE_OUTPUT=$(sudo -u "${DEV_USER}" git clone "${repo}" "${target_dir}" 2>&1) || {
+        echo "  [WARN] Failed to clone ${repo}:"
+        echo "${CLONE_OUTPUT}"
+        if echo "${CLONE_OUTPUT}" | grep -q "SAML SSO"; then
+          CLONE_WARNINGS="${CLONE_WARNINGS}Failed to clone ${repo_name} (GitHub SAML SSO authorization required). "
+        else
+          CLONE_WARNINGS="${CLONE_WARNINGS}Failed to clone ${repo_name}. "
+        fi
+        continue
+      }
+    fi
+
+    # Check if a matching .env exists in staging
+    if [[ -d "/tmp/repo-envs" && -f "/tmp/repo-envs/${repo_name}.env" && -d "${target_dir}" ]]; then
+      echo "  -> Copying ${repo_name}.env to ${target_dir}/.env"
+      install -m 0600 -o "${DEV_USER}" -g "${DEV_USER}" "/tmp/repo-envs/${repo_name}.env" "${target_dir}/.env"
+    fi
+  done <<< "${REPOS_LIST}"
+  rm -rf /tmp/repo-envs 2>/dev/null || true
+fi
+
+# Record clone warnings in guest attributes if any occurred
+if [[ -n "${CLONE_WARNINGS}" ]]; then
+  curl -s -X PUT --data "${CLONE_WARNINGS}" \
+    -H "Metadata-Flavor: Google" \
+    "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/devbox/warnings" 2>/dev/null || true
+fi
+
+# 11. Configure and start Wideboi as a systemd user service
+set_stage "starting-wideboi-service"
+echo "==> Configuring Wideboi systemd user service..."
+USER_SYSTEMD_DIR="${DEV_HOME}/.config/systemd/user"
+mkdir -p "${USER_SYSTEMD_DIR}"
+
+WIDEBOI_TOKEN=$(get_secret "wideboi-token")
+WIDEBOI_EXEC="/usr/local/bin/wideboi --websocket 0.0.0.0:8080 --disable-tls"
+if [[ -n "${WIDEBOI_TOKEN}" ]]; then
+  WIDEBOI_EXEC="${WIDEBOI_EXEC} --websocket-token ${WIDEBOI_TOKEN}"
+fi
+WIDEBOI_EXEC="${WIDEBOI_EXEC} server"
+
+cat <<EOF > "${USER_SYSTEMD_DIR}/wideboi.service"
+[Unit]
+Description=Wideboi Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h
+ExecStart=${WIDEBOI_EXEC}
+Restart=always
+RestartSec=5
+EnvironmentFile=-%h/.profile.d/agent-env.sh
+Environment="PATH=%h/.local/bin:%h/bin:%h/.opencode/bin:/usr/local/bin:/usr/bin:/bin"
+
+[Install]
+WantedBy=default.target
+EOF
+
+chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.config"
+
+# Start the user service via systemctl user mode
+USER_UID=$(id -u "${DEV_USER}")
+export XDG_RUNTIME_DIR="/run/user/${USER_UID}"
+sudo -u "${DEV_USER}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" systemctl --user daemon-reload || true
+sudo -u "${DEV_USER}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" systemctl --user enable --now wideboi.service || true
+
+# 11. Connect Tailscale at the very end of startup
+set_stage "connecting-tailscale"
+echo "==> Connecting Tailscale (signals ready)..."
+if [[ -n "${TS_AUTHKEY}" ]]; then
+  tailscale up \
+    --authkey="${TS_AUTHKEY}" \
+    --hostname="wideboi-sandbox" \
+    --reset \
+    --accept-routes
+  echo "==> Tailscale connected."
+  set_stage "ready"
+else
+  echo "==> [WARN] No tailscale-auth-key secret found. Tailscale installed but not logged in."
+  set_stage "ready-no-tailscale"
+fi
+
+echo "================================================================"
+echo "Devbox Bootstrap Finished: $(date -u)"
+echo "Wideboi service status:"
+sudo -u "${DEV_USER}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" systemctl --user status wideboi.service --no-pager || true
+echo "================================================================"
