@@ -58,7 +58,32 @@ chmod 0440 "/etc/sudoers.d/90-${DEV_USER}"
 # Enable systemd user lingering so user services/tmux stay alive after logout
 loginctl enable-linger "${DEV_USER}"
 
-# 3. Helper to fetch secrets from Secret Manager
+# 3. Docker Installation
+set_stage "installing-docker"
+echo "==> Installing Docker CE..."
+install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+chmod a+r /etc/apt/keyrings/docker.asc
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "${UBUNTU_CODENAME:-$VERSION_CODENAME}") stable" | \
+  tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+apt-get update -y
+apt-get install -y --no-install-recommends \
+  docker-ce \
+  docker-ce-cli \
+  containerd.io \
+  docker-buildx-plugin \
+  docker-compose-plugin
+
+# Ensure docker group exists and user is added
+groupadd -f docker
+usermod -aG docker "${DEV_USER}"
+systemctl enable --now docker
+
+# 4. Helper to fetch secrets from Secret Manager
 get_secret() {
   local secret_name="$1"
   gcloud secrets versions access latest --secret="${secret_name}" 2>/dev/null || true

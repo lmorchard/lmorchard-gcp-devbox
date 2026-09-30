@@ -11,6 +11,7 @@ Accessed securely via **Tailscale** (no public IP, no firewall ports opened). Di
 - **Wideboi Background Server**: Configured as a persistent systemd user service (`loginctl enable-linger` enabled) with websocket web UI exposed on port 8080 over Tailscale.
 - **Dotfiles & Shell**: Automatically clones and links [lmorchard/dotfiles](https://github.com/lmorchard/dotfiles) with oh-my-zsh and zsh shell.
 - **Secrets Management**: Pulls Tailscale auth keys, GitHub PAT, and agent keys securely on boot from GCP Secret Manager via instance service account.
+- **Docker CE**: Configured and enabled on boot, with the non-root developer user added to the `docker` group.
 - **Rolling Wideboi**: Automatically pulls the latest Linux amd64 rolling release binary directly from GitHub.
 
 ## Prerequisites
