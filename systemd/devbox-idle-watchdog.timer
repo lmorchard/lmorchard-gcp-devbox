@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Devbox Idle Watchdog periodically
+After=network.target
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
