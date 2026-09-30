@@ -64,7 +64,7 @@ store_secret() {
 }
 
 # 1. Tailscale Auth Key
-store_secret "tailscale-auth-key" "${TAILSCALE_AUTH_KEY:-}" "Tailscale auth key (reusable or ephemeral)"
+store_secret "tailscale-auth-key" "${TAILSCALE_AUTH_KEY:-}" "Tailscale auth key (must be reusable; recommend ephemeral)"
 
 # 2. GitHub PAT
 store_secret "github-pat" "${GITHUB_PAT:-}" "GitHub Personal Access Token (PAT) with repo/workflow scope"

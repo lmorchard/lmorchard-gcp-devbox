@@ -314,7 +314,7 @@ do-up: init-secrets ensure-network ensure-sa
 		--service-account=$(SA_EMAIL) \
 		--scopes=cloud-platform \
 		--metadata-from-file=startup-script=startup.sh \
-		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly,auto-stop-hours=$(AUTO_STOP_HOURS),dev-user=$(DEV_USER)
+		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly,auto-stop-hours=$(AUTO_STOP_HOURS),dev-user=$(DEV_USER),tailscale-hostname=$(TAILSCALE_HOSTNAME)
 	@echo ""
 	@echo "Instance created. Waiting for bootstrap to complete and Tailscale to connect..."
 	@$(MAKE) wait-ready
@@ -350,6 +350,10 @@ wait-ready:
 				echo "    $$warnings"; \
 			fi; \
 			exit 0; \
+		elif [ "$$stage" = "ready-tailscale-failed" ]; then \
+			echo ""; \
+			echo "❌ [ERROR] Tailscale failed to connect during bootstrap. Run 'make logs' to inspect."; \
+			exit 1; \
 		fi; \
 		sleep 3; \
 	done; \
@@ -421,7 +425,16 @@ stop: check-project
 
 # 9. Resume stopped instance
 start: check-project
+	@echo "==> Resuming $(INSTANCE_NAME) in $(ZONE)..."
 	gcloud compute instances start $(INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --quiet
+	@echo ""
+	@echo "Instance resumed. Waiting for bootstrap to complete and Tailscale to connect..."
+	@sleep 5
+	@$(MAKE) wait-ready
+	@echo ""
+	@echo "==> Devbox is READY!"
+	@echo "    SSH:     make ssh (or: ssh $(DEV_USER)@$(TAILSCALE_HOSTNAME))"
+	@echo "    Web UI:  make web (or: http://$(TAILSCALE_HOSTNAME):8080)"
 
 # 10. Delete VM instance (stopping all compute/disk costs)
 down: check-project
