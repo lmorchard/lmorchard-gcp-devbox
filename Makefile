@@ -20,6 +20,9 @@ SUBNET_RANGE ?= 10.10.0.0/24
 # Flags for network
 NET_FLAGS = --network=$(NETWORK) --subnet=$(SUBNET)
 
+# Idle auto-stop hours (default 2; 0 to disable)
+AUTO_STOP_HOURS ?= 2
+
 # Service Account for the devbox instance
 SA_NAME ?= devbox-runner
 SA_EMAIL = $(SA_NAME)@$(PROJECT_ID).iam.gserviceaccount.com
@@ -119,7 +122,7 @@ up: check-project init-secrets ensure-network ensure-sa
 		--service-account=$(SA_EMAIL) \
 		--scopes=cloud-platform \
 		--metadata-from-file=startup-script=startup.sh \
-		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly
+		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly,auto-stop-hours=$(AUTO_STOP_HOURS)
 	@echo ""
 	@echo "Instance created. Waiting for bootstrap to complete and Tailscale to connect..."
 	@$(MAKE) wait-ready

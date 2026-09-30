@@ -75,6 +75,15 @@ This creates the service account with required IAM roles and spins up an `e2-sta
   make logs
   ```
 
+- **Automated Idle Auto-Stop**:
+  The VM runs a systemd idle watchdog (`devbox-idle-watchdog`) checking:
+  - Active interactive SSH logins
+  - Connected Wideboi web or terminal clients
+  - Active child processes under agents (`claude`, `opencode`, `codex`)
+  - Recent file writes in agent session and history directories
+  - CPU load thresholds
+  If the machine is completely inactive for `AUTO_STOP_HOURS` (default: 2 hours), it calls `systemctl poweroff` to stop compute and IP billing while preserving disk state. Set `AUTO_STOP_HOURS=0` in `.env` to disable.
+
 ### 4. Stopping / Teardown
 
 - **Pause VM (Temporary stop, disk remains, compute billing stops)**:

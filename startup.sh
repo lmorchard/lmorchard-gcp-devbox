@@ -336,7 +336,176 @@ export XDG_RUNTIME_DIR="/run/user/${USER_UID}"
 sudo -u "${DEV_USER}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" systemctl --user daemon-reload || true
 sudo -u "${DEV_USER}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" systemctl --user enable --now wideboi.service || true
 
-# 11. Connect Tailscale at the very end of startup
+# 12. Configure idle auto-stop watchdog
+set_stage "configuring-idle-watchdog"
+echo "==> Configuring idle watchdog..."
+AUTO_STOP_HOURS=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/auto-stop-hours" 2>/dev/null || echo "2")
+AUTO_STOP_HOURS="${AUTO_STOP_HOURS:-2}"
+
+if [[ "${AUTO_STOP_HOURS}" -gt 0 ]]; then
+  echo "export AUTO_STOP_HOURS=\"${AUTO_STOP_HOURS}\"" >> "${DEV_HOME}/.profile.d/agent-env.sh"
+
+  cat <<'EOF' > /usr/local/bin/devbox-idle-watchdog
+#!/usr/bin/env bash
+set -euo pipefail
+
+DEV_USER="${DEV_USER:-lmorchard}"
+DEV_HOME="/home/${DEV_USER}"
+STATE_FILE="/var/run/devbox-idle-state"
+
+export HOME="${DEV_HOME}"
+
+if [[ -f "${DEV_HOME}/.profile.d/agent-env.sh" ]]; then
+  # shellcheck source=/dev/null
+  source "${DEV_HOME}/.profile.d/agent-env.sh"
+fi
+
+AUTO_STOP_HOURS="${AUTO_STOP_HOURS:-2}"
+
+if [[ "${AUTO_STOP_HOURS}" -le 0 ]]; then
+  exit 0
+fi
+
+IDLE_LIMIT_SECONDS=$(( AUTO_STOP_HOURS * 3600 ))
+NOW=$(date +%s)
+
+log() {
+  echo "[$(date -u '+%Y-%m-%d %H:%M:%S UTC')] [devbox-idle-watchdog] $*"
+  logger -t devbox-idle-watchdog "$*"
+}
+
+is_active=0
+active_reasons=()
+
+# 1. Interactive SSH logins
+if who | grep -q 'pts/'; then
+  is_active=1
+  active_reasons+=("interactive-ssh-session")
+fi
+
+# 2 & 3. Wideboi status
+DEV_UID=$(id -u "${DEV_USER}" 2>/dev/null || echo 1000)
+WB_SOCK="/tmp/wideboi-${DEV_UID}/default.sock"
+
+if [[ -S "${WB_SOCK}" ]] && command -v wideboi >/dev/null 2>&1; then
+  WB_CLIENTS=$(sudo -u "${DEV_USER}" wideboi -s "${WB_SOCK}" status --traffic --json 2>/dev/null | jq -r '.clients | length' 2>/dev/null || echo 0)
+  if [[ "${WB_CLIENTS}" -gt 0 ]]; then
+    is_active=1
+    active_reasons+=("wideboi-clients-connected:${WB_CLIENTS}")
+  fi
+
+  WB_WORKING_PANES=$(sudo -u "${DEV_USER}" wideboi -s "${WB_SOCK}" status --json 2>/dev/null | jq -r '[.pane_statuses[] | select(. == "working")] | length' 2>/dev/null || echo 0)
+  if [[ "${WB_WORKING_PANES}" -gt 0 ]]; then
+    is_active=1
+    active_reasons+=("wideboi-panes-working:${WB_WORKING_PANES}")
+  fi
+fi
+
+# 4. Agent child processes
+AGENT_PIDS=$(pgrep -u "${DEV_USER}" -f 'claude|opencode|codex' 2>/dev/null || true)
+if [[ -n "${AGENT_PIDS}" ]]; then
+  for apid in ${AGENT_PIDS}; do
+    CHILD_COUNT=$(pgrep -P "${apid}" 2>/dev/null | wc -l || true)
+    CHILD_COUNT=$(echo "${CHILD_COUNT}" | tr -d ' ')
+    if [[ -n "${CHILD_COUNT}" && "${CHILD_COUNT}" -gt 0 ]]; then
+      CHILDREN_NAMES=$(pgrep -P "${apid}" -a 2>/dev/null | head -n 3 | tr '\n' '; ' || true)
+      is_active=1
+      active_reasons+=("agent-children-active:[${CHILDREN_NAMES}]")
+      break
+    fi
+  done
+fi
+
+# 5. Recent file writes in agent directories
+AGENT_DIRS=(
+  "${DEV_HOME}/.claude/sessions"
+  "${DEV_HOME}/.claude/history.jsonl"
+  "${DEV_HOME}/.codex/sessions"
+  "${DEV_HOME}/.local/share/opencode"
+)
+
+for adir in "${AGENT_DIRS[@]}"; do
+  if [[ -e "${adir}" ]]; then
+    RECENT_MODS=$(find "${adir}" -maxdepth 2 -mmin -15 2>/dev/null | head -n 1)
+    if [[ -n "${RECENT_MODS}" ]]; then
+      is_active=1
+      active_reasons+=("recent-agent-file-writes:${adir}")
+      break
+    fi
+  fi
+done
+
+# 6. CPU load
+LOAD_1MIN=$(awk '{print $1}' /proc/loadavg 2>/dev/null || echo "0.0")
+LOAD_INT=$(echo "${LOAD_1MIN}" | awk '{print int($1 * 100)}')
+if [[ "${LOAD_INT}" -ge 50 ]]; then
+  is_active=1
+  active_reasons+=("cpu-load:${LOAD_1MIN}")
+fi
+
+# Evaluate
+if [[ "${is_active}" -eq 1 ]]; then
+  echo "${NOW}" > "${STATE_FILE}"
+  log "System ACTIVE: ${active_reasons[*]} (resetting idle timer)"
+  exit 0
+fi
+
+if [[ ! -f "${STATE_FILE}" ]]; then
+  echo "${NOW}" > "${STATE_FILE}"
+  log "System IDLE detected. Initialized idle timer."
+  exit 0
+fi
+
+LAST_ACTIVE=$(cat "${STATE_FILE}" 2>/dev/null || echo "${NOW}")
+IDLE_SECONDS=$(( NOW - LAST_ACTIVE ))
+IDLE_HOURS_FORMAT=$(awk -v s="${IDLE_SECONDS}" 'BEGIN {printf "%.1f", s / 3600}')
+
+log "System IDLE for ${IDLE_SECONDS}s (~${IDLE_HOURS_FORMAT}h / limit: ${AUTO_STOP_HOURS}h)"
+
+if [[ "${IDLE_SECONDS}" -ge "${IDLE_LIMIT_SECONDS}" ]]; then
+  log "🚨 IDLE LIMIT REACHED (${IDLE_HOURS_FORMAT}h >= ${AUTO_STOP_HOURS}h). Powering off instance..."
+  rm -f "${STATE_FILE}"
+  sync
+  systemctl poweroff
+fi
+EOF
+
+  chmod 0755 /usr/local/bin/devbox-idle-watchdog
+
+  cat <<'EOF' > /etc/systemd/system/devbox-idle-watchdog.service
+[Unit]
+Description=Devbox Idle Auto-Stop Watchdog
+After=network.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/devbox-idle-watchdog
+StandardOutput=journal
+StandardError=journal
+EOF
+
+  cat <<'EOF' > /etc/systemd/system/devbox-idle-watchdog.timer
+[Unit]
+Description=Run Devbox Idle Watchdog periodically
+After=network.target
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=10min
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable --now devbox-idle-watchdog.timer
+  echo "==> Idle watchdog timer enabled (timeout: ${AUTO_STOP_HOURS}h)."
+else
+  echo "==> Idle watchdog disabled (AUTO_STOP_HOURS=${AUTO_STOP_HOURS})."
+fi
+
+# 13. Connect Tailscale at the very end of startup
 set_stage "connecting-tailscale"
 echo "==> Connecting Tailscale (signals ready)..."
 if [[ -n "${TS_AUTHKEY}" ]]; then
