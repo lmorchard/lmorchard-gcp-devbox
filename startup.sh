@@ -55,6 +55,7 @@ if ! command -v git >/dev/null 2>&1 || ! command -v zsh >/dev/null 2>&1 || ! com
     ripgrep \
     fd-find \
     htop \
+    xz-utils \
     python3-pip \
     python3-venv \
     yamllint
@@ -177,17 +178,19 @@ if [[ -n "${GH_PAT}" ]]; then
 fi
 
 # 6. Install Node.js & Go
-NODE_MAJOR=0
+NODE_TARGET_VERSION="22.16.0"
+NODE_CURRENT_VERSION=""
 if command -v node >/dev/null 2>&1; then
-  NODE_MAJOR=$(node -v | sed 's/^v//' | cut -d. -f1)
+  NODE_CURRENT_VERSION=$(node -v | sed 's/^v//')
 fi
-if [[ "${NODE_MAJOR}" -lt 22 ]] || ! command -v go >/dev/null 2>&1; then
+if [[ "${NODE_CURRENT_VERSION}" != "${NODE_TARGET_VERSION}" ]] || ! command -v go >/dev/null 2>&1; then
   set_stage "installing-node-and-go"
-  echo "==> [5/9] Installing Node.js 22 LTS and Go..."
-  # Node 22.x (required >= 22 by pilo-evals-judge)
-  if [[ "${NODE_MAJOR}" -lt 22 ]]; then
-    curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-    apt-get install -y nodejs
+  echo "==> [5/9] Installing Node.js ${NODE_TARGET_VERSION} and Go..."
+  # Pin Node.js to 22.16.0 (required by local Argo proofs & CI)
+  if [[ "${NODE_CURRENT_VERSION}" != "${NODE_TARGET_VERSION}" ]]; then
+    curl -fsSL "https://nodejs.org/dist/v${NODE_TARGET_VERSION}/node-v${NODE_TARGET_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+    tar -C /usr/local --strip-components=1 -xJf /tmp/node.tar.xz
+    rm -f /tmp/node.tar.xz
   fi
 
   # Go (latest stable via snap or tarball)
@@ -423,6 +426,20 @@ if [[ -n "${REPOS_LIST}" ]]; then
     if [[ -d "/tmp/repo-envs" && -f "/tmp/repo-envs/${repo_name}.env" && -d "${target_dir}" ]]; then
       echo "  -> Copying ${repo_name}.env to ${target_dir}/.env"
       install -m 0600 -o "${DEV_USER}" -g "${DEV_USER}" "/tmp/repo-envs/${repo_name}.env" "${target_dir}/.env"
+    fi
+
+    # Run optional per-repo setup hook if present (script/setup, setup.sh, or make setup)
+    if [[ -d "${target_dir}" ]]; then
+      if [[ -x "${target_dir}/script/setup" ]]; then
+        echo "  -> Running ${repo_name} script/setup..."
+        sudo -u "${DEV_USER}" bash -c "cd '${target_dir}' && ./script/setup" || echo "  [WARN] ${repo_name} script/setup failed."
+      elif [[ -f "${target_dir}/setup.sh" ]]; then
+        echo "  -> Running ${repo_name} setup.sh..."
+        sudo -u "${DEV_USER}" bash -c "cd '${target_dir}' && bash setup.sh" || echo "  [WARN] ${repo_name} setup.sh failed."
+      elif [[ -f "${target_dir}/Makefile" ]] && grep -qE '^[[:space:]]*setup:' "${target_dir}/Makefile" 2>/dev/null; then
+        echo "  -> Running 'make setup' in ${repo_name}..."
+        sudo -u "${DEV_USER}" bash -c "cd '${target_dir}' && make setup" || echo "  [WARN] 'make setup' in ${repo_name} failed."
+      fi
     fi
   done <<< "${REPOS_LIST}"
   rm -rf /tmp/repo-envs 2>/dev/null || true
