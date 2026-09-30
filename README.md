@@ -65,6 +65,11 @@ This creates the service account with required IAM roles and spins up an `e2-sta
   # or open in browser:
   http://wideboi-sandbox:8080
   ```
+- **Hot-Upgrade Wideboi**:
+  ```bash
+  make upgrade-wideboi
+  ```
+  Pulls the latest rolling build from GitHub and runs `wideboi upgrade-server` in-place without closing panes or interrupting active agent sessions.
 - **View Startup Progress**:
   ```bash
   make logs

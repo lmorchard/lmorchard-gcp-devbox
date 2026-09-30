@@ -39,6 +39,7 @@ help:
 	@echo "  make up            - Create and bootstrap the ephemeral VM"
 	@echo "  make ssh           - SSH into the VM via Tailscale (or fallback to gcloud)"
 	@echo "  make web           - Open Wideboi's web UI over Tailscale in your browser"
+	@echo "  make upgrade-wideboi - Hot-upgrade running Wideboi server to latest rolling build"
 	@echo "  make status        - Check VM and startup progress"
 	@echo "  make logs          - Tail the startup script log"
 	@echo "  make stop          - Stop VM (compute billing paused, disk remains if kept)"
@@ -188,6 +189,22 @@ web:
 	URL="http://$$TARGET:8080/$$TOKEN_FRAGMENT"; \
 	echo "==> Opening Wideboi web UI at $$URL ..."; \
 	open "$$URL" 2>/dev/null || xdg-open "$$URL" 2>/dev/null || echo "Open $$URL in your browser."
+
+# Upgrade wideboi in-place without dropping sessions or processes
+upgrade-wideboi:
+	@TS_IP="$(call get-ts-ip)"; \
+	TARGET="$${TS_IP:-$(TAILSCALE_HOSTNAME)}"; \
+	echo "==> Upgrading Wideboi on $$TARGET to latest rolling release..."; \
+	ssh -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/dev/null $(DEV_USER)@$$TARGET \
+		"bash -c 'set -e; \
+		TMP_DIR=\$$(mktemp -d); \
+		curl -fsSL https://github.com/lmorchard/wideboi/releases/download/rolling/wideboi_rolling_linux_amd64.tar.gz -o \$$TMP_DIR/wideboi.tar.gz; \
+		tar -C \$$TMP_DIR -xzf \$$TMP_DIR/wideboi.tar.gz; \
+		sudo install -m 0755 \$$TMP_DIR/wideboi /usr/local/bin/wideboi; \
+		wideboi upgrade-server /usr/local/bin/wideboi || systemctl --user restart wideboi.service; \
+		rm -rf \$$TMP_DIR; \
+		echo \"Wideboi upgraded to:\"; \
+		wideboi version'"
 
 # 6. Monitor startup logs (stream live serial port output, non-interactive)
 logs: check-project
