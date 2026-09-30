@@ -4,3 +4,4 @@
 workspace/repos.txt
 workspace/envs/*.env
 workspace/envs/*/.env
+.worktrees/

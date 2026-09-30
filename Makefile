@@ -9,8 +9,32 @@ INSTANCE_NAME ?= wideboi-sandbox
 MACHINE_TYPE ?= e2-standard-4
 BOOT_DISK_SIZE ?= 50GB
 BOOT_DISK_TYPE ?= pd-balanced
+
+# Custom Image Configuration & Auto-Detection
+CUSTOM_IMAGE_FAMILY ?= devbox-base
+CUSTOM_IMAGE_EXISTS := $(shell gcloud compute images describe-from-family $(CUSTOM_IMAGE_FAMILY) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null)
+
+ifeq ($(USE_CUSTOM_IMAGE),false)
+  IMAGE_FAMILY = ubuntu-2404-lts-amd64
+  IMAGE_PROJECT = ubuntu-os-cloud
+else ifneq ($(CUSTOM_IMAGE_EXISTS),)
+  # Automatically select devbox-base if it exists, unless user explicitly set a non-stock family
+  ifeq ($(filter-out ubuntu-2404-lts-amd64,$(IMAGE_FAMILY)),)
+    IMAGE_FAMILY = $(CUSTOM_IMAGE_FAMILY)
+    IMAGE_PROJECT = $(PROJECT_ID)
+  endif
+else
+  IMAGE_FAMILY ?= ubuntu-2404-lts-amd64
+  IMAGE_PROJECT ?= ubuntu-os-cloud
+endif
+
 IMAGE_FAMILY ?= ubuntu-2404-lts-amd64
 IMAGE_PROJECT ?= ubuntu-os-cloud
+
+# Builder VM settings for baking custom images
+BUILDER_INSTANCE_NAME ?= devbox-builder
+BUILDER_BASE_FAMILY ?= ubuntu-2404-lts-amd64
+BUILDER_BASE_PROJECT ?= ubuntu-os-cloud
 
 # Network Configuration (defaults to dedicated 'devbox-net' VPC)
 NETWORK ?= devbox-net
@@ -34,12 +58,15 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets up down stop start status ssh web logs clean
+.PHONY: help init-secrets up down stop start status ssh web logs clean bake-image list-images clean-images
 
 help:
 	@echo "wideboi-sandbox management commands:"
 	@echo "  make init-secrets  - Interactive wizard to populate GCP Secret Manager"
 	@echo "  make sync-secrets  - Push updated .env secrets to Secret Manager & running VM"
+	@echo "  make bake-image    - Pre-bake custom GCE image in '$(CUSTOM_IMAGE_FAMILY)' family"
+	@echo "  make list-images   - List images in '$(CUSTOM_IMAGE_FAMILY)' family"
+	@echo "  make clean-images  - Delete older images in '$(CUSTOM_IMAGE_FAMILY)', keeping latest"
 	@echo "  make up            - Create and bootstrap the ephemeral VM"
 	@echo "  make ssh           - SSH into the VM via Tailscale (or fallback to gcloud)"
 	@echo "  make web           - Open Wideboi's web UI over Tailscale in your browser"
@@ -122,9 +149,125 @@ ensure-sa: check-project
 		--role="roles/secretmanager.secretAccessor" \
 		--condition=None --quiet >/dev/null
 
+# 3b. Pre-bake custom GCE image
+bake-image: check-project ensure-network
+	@if gcloud compute instances describe $(BUILDER_INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) >/dev/null 2>&1; then \
+		echo "Error: $(BUILDER_INSTANCE_NAME) already exists. Delete it first with 'gcloud compute instances delete $(BUILDER_INSTANCE_NAME) --zone=$(ZONE)'"; \
+		exit 1; \
+	fi
+	@echo "==> Pre-baking image in family '$(CUSTOM_IMAGE_FAMILY)'..."
+	@IMAGE_NAME="$(CUSTOM_IMAGE_FAMILY)-$$(date +%Y%m%d%H%M)"; \
+	echo "==> Target image name: $$IMAGE_NAME"; \
+	echo "==> Launching builder instance '$(BUILDER_INSTANCE_NAME)' in $(ZONE)..."; \
+	gcloud compute instances create $(BUILDER_INSTANCE_NAME) \
+		--project=$(PROJECT_ID) \
+		--zone=$(ZONE) \
+		--machine-type=$(MACHINE_TYPE) \
+		--image-family=$(BUILDER_BASE_FAMILY) \
+		--image-project=$(BUILDER_BASE_PROJECT) \
+		--boot-disk-size=$(BOOT_DISK_SIZE) \
+		--boot-disk-type=$(BOOT_DISK_TYPE) \
+		--boot-disk-auto-delete \
+		$(NET_FLAGS) \
+		--metadata-from-file=startup-script=scripts/bake.sh \
+		--metadata=enable-guest-attributes=TRUE,dev-user=$(DEV_USER) || exit 1; \
+	echo "==> Tracking image bake stages:"; \
+	last_stage=""; \
+	bake_ok=0; \
+	for i in $$(seq 1 180); do \
+		stage=$$(gcloud compute instances get-guest-attributes $(BUILDER_INSTANCE_NAME) \
+			--project=$(PROJECT_ID) \
+			--zone=$(ZONE) \
+			--query-path="devbox/bake-stage" \
+			--format="value(value)" 2>/dev/null || true); \
+		status=$$(gcloud compute instances get-guest-attributes $(BUILDER_INSTANCE_NAME) \
+			--project=$(PROJECT_ID) \
+			--zone=$(ZONE) \
+			--query-path="devbox/bake-status" \
+			--format="value(value)" 2>/dev/null || true); \
+		if [ -n "$$stage" ] && [ "$$stage" != "$$last_stage" ]; then \
+			echo "    [stage] $$stage"; \
+			last_stage="$$stage"; \
+		fi; \
+		if [ "$$status" = "complete" ] || [ "$$stage" = "complete" ]; then \
+			echo "    [stage] image bake complete!"; \
+			bake_ok=1; \
+			break; \
+		elif [ "$$status" = "failed" ]; then \
+			echo "❌ Image bake script failed. Streaming serial port log:"; \
+			gcloud compute instances get-serial-port-output $(BUILDER_INSTANCE_NAME) \
+				--project=$(PROJECT_ID) \
+				--zone=$(ZONE) || true; \
+			break; \
+		fi; \
+		sleep 3; \
+	done; \
+	if [ "$$bake_ok" -ne 1 ]; then \
+		echo "❌ Bake failed or timed out. Fetching serial logs before cleanup:"; \
+		gcloud compute instances get-serial-port-output $(BUILDER_INSTANCE_NAME) \
+			--project=$(PROJECT_ID) \
+			--zone=$(ZONE) || true; \
+		echo "==> Cleaning up builder instance..."; \
+		gcloud compute instances delete $(BUILDER_INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --quiet || true; \
+		exit 1; \
+	fi; \
+	echo "==> Stopping builder instance before creating image..."; \
+	gcloud compute instances stop $(BUILDER_INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --quiet || { \
+		echo "❌ Failed to stop builder instance. Retaining instance for inspection."; \
+		exit 1; \
+	}; \
+	echo "==> Creating custom image '$$IMAGE_NAME'..."; \
+	gcloud compute images create "$$IMAGE_NAME" \
+		--project=$(PROJECT_ID) \
+		--source-disk=$(BUILDER_INSTANCE_NAME) \
+		--source-disk-zone=$(ZONE) \
+		--family=$(CUSTOM_IMAGE_FAMILY) \
+		--quiet || { \
+		echo "❌ Failed to create image '$$IMAGE_NAME'. Retaining builder instance for inspection."; \
+		exit 1; \
+	}; \
+	echo "==> Deleting builder instance '$(BUILDER_INSTANCE_NAME)'..."; \
+	gcloud compute instances delete $(BUILDER_INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --quiet; \
+	echo "==> Successfully baked image '$$IMAGE_NAME' in family '$(CUSTOM_IMAGE_FAMILY)'!"
+
+# List images in custom image family
+list-images: check-project
+	@echo "==> Images in family '$(CUSTOM_IMAGE_FAMILY)':"
+	@gcloud compute images list \
+		--project=$(PROJECT_ID) \
+		--filter="family=$(CUSTOM_IMAGE_FAMILY)" \
+		--format="table(name,family,creationTimestamp,status)"
+
+# Clean older images in custom image family (keeps latest)
+clean-images: check-project
+	@echo "==> Checking for older images in family '$(CUSTOM_IMAGE_FAMILY)' to prune..."
+	@IMAGES=$$(gcloud compute images list \
+		--project=$(PROJECT_ID) \
+		--filter="family=$(CUSTOM_IMAGE_FAMILY)" \
+		--sort-by="~creationTimestamp" \
+		--format="value(name)") || { \
+		echo "Error: Failed to list images in project $(PROJECT_ID)"; \
+		exit 1; \
+	}; \
+	TOTAL=$$(echo "$$IMAGES" | grep -v '^$$' | wc -l | tr -d ' '); \
+	if [ "$$TOTAL" -le 1 ]; then \
+		echo "==> No older images to clean up (total images: $$TOTAL)."; \
+	else \
+		LATEST=$$(echo "$$IMAGES" | head -n 1); \
+		OLDER=$$(echo "$$IMAGES" | tail -n +2); \
+		echo "==> Keeping latest image: $$LATEST"; \
+		echo "==> Deleting older image(s):"; \
+		for img in $$OLDER; do \
+			echo "    - Deleting $$img..."; \
+			gcloud compute images delete "$$img" --project=$(PROJECT_ID) --quiet || exit 1; \
+		done; \
+		echo "==> Cleanup complete."; \
+	fi
+
 # 4. Spin up ephemeral VM
 up: check-project init-secrets ensure-network ensure-sa
 	@echo "==> Launching $(INSTANCE_NAME) in $(ZONE)..."
+	@echo "    Using image: $(IMAGE_FAMILY) (project: $(IMAGE_PROJECT))"
 	gcloud compute instances create $(INSTANCE_NAME) \
 		--project=$(PROJECT_ID) \
 		--zone=$(ZONE) \
@@ -138,7 +281,7 @@ up: check-project init-secrets ensure-network ensure-sa
 		--service-account=$(SA_EMAIL) \
 		--scopes=cloud-platform \
 		--metadata-from-file=startup-script=startup.sh \
-		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly,auto-stop-hours=$(AUTO_STOP_HOURS)
+		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly,auto-stop-hours=$(AUTO_STOP_HOURS),dev-user=$(DEV_USER)
 	@echo ""
 	@echo "Instance created. Waiting for bootstrap to complete and Tailscale to connect..."
 	@$(MAKE) wait-ready
