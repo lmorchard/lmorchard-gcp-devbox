@@ -271,6 +271,15 @@ if ! command -v yq >/dev/null 2>&1; then
   chmod 0755 /usr/local/bin/yq
 fi
 
+if ! command -v kind >/dev/null 2>&1; then
+  set_stage "installing-kind"
+  echo "==> Installing kind..."
+  KIND_VERSION="v0.33.0"
+  curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" -o /tmp/kind
+  install -m 0755 /tmp/kind /usr/local/bin/kind
+  rm -f /tmp/kind
+fi
+
 if ! command -v fuzzfetch >/dev/null 2>&1; then
   echo "==> Installing python evaluation tools (fuzzfetch, pytest, pyyaml)..."
   pip install --break-system-packages pytest PyYAML fuzzfetch || true

@@ -201,6 +201,12 @@ echo "==> Installing yq..."
 curl -fsSL "https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64" -o /usr/local/bin/yq
 chmod 0755 /usr/local/bin/yq
 
+echo "==> Installing kind..."
+KIND_VERSION="v0.33.0"
+curl -fsSL "https://kind.sigs.k8s.io/dl/${KIND_VERSION}/kind-linux-amd64" -o /tmp/kind
+install -m 0755 /tmp/kind /usr/local/bin/kind
+rm -f /tmp/kind
+
 echo "==> Installing python evaluation tools (fuzzfetch, pytest, pyyaml)..."
 pip install --break-system-packages pytest PyYAML fuzzfetch || true
 
