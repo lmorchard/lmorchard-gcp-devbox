@@ -28,6 +28,14 @@ set_stage() {
     "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/devbox/stage" 2>/dev/null || true
 }
 
+set_stage "booting"
+
+TAILSCALE_HOSTNAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/tailscale-hostname" 2>/dev/null || true)
+if [[ -z "${TAILSCALE_HOSTNAME}" ]]; then
+  TAILSCALE_HOSTNAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/name" 2>/dev/null || echo "wideboi-sandbox")
+fi
+TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-wideboi-sandbox}"
+
 # 1. Base packages
 if ! command -v git >/dev/null 2>&1 || ! command -v zsh >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
   set_stage "installing-base-packages"
@@ -571,11 +579,31 @@ fi
 set_stage "connecting-tailscale"
 echo "==> Connecting Tailscale (signals ready)..."
 if [[ -n "${TS_AUTHKEY}" ]]; then
-  tailscale up \
-    --authkey="${TS_AUTHKEY}" \
-    --hostname="wideboi-sandbox" \
-    --reset \
-    --accept-routes
+  TS_BACKEND_STATE=$(tailscale status --json 2>/dev/null | jq -r '.BackendState // empty' 2>/dev/null || true)
+  if [[ "${TS_BACKEND_STATE}" == "Running" ]]; then
+    echo "==> Tailscale is already connected and running."
+    tailscale up --hostname="${TAILSCALE_HOSTNAME}" --accept-routes
+  else
+    echo "==> Tailscale backend state is '${TS_BACKEND_STATE:-not running}'. Resetting local state for clean authentication..."
+    # If the previous ephemeral node was culled by Tailscale while stopped,
+    # /var/lib/tailscale holds a stale node key that prevents re-authentication.
+    # Wiping state and restarting tailscaled ensures a clean ephemeral registration.
+    tailscale logout 2>/dev/null || true
+    systemctl stop tailscaled
+    rm -rf /var/lib/tailscale/*
+    systemctl start tailscaled
+    sleep 2
+
+    if ! tailscale up \
+      --authkey="${TS_AUTHKEY}" \
+      --hostname="${TAILSCALE_HOSTNAME}" \
+      --reset \
+      --accept-routes; then
+      echo "==> [ERROR] Failed to authenticate Tailscale with provided auth key."
+      set_stage "ready-tailscale-failed"
+      exit 1
+    fi
+  fi
   echo "==> Tailscale connected."
   set_stage "ready"
 else
