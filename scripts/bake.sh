@@ -61,6 +61,7 @@ apt-get install -y --no-install-recommends \
   ripgrep \
   fd-find \
   htop \
+  xz-utils \
   python3-pip \
   python3-venv \
   yamllint
@@ -131,11 +132,13 @@ echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githu
 apt-get update -y
 apt-get install -y gh
 
-# 6. Install Node.js 22 LTS & Go
+# 6. Install Node.js 22.16.0 & Go
 set_bake_stage "installing-node-and-go"
-echo "==> [6/10] Installing Node.js 22 LTS and Go..."
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
-apt-get install -y nodejs
+echo "==> [6/10] Installing Node.js 22.16.0 and Go..."
+NODE_TARGET_VERSION="22.16.0"
+curl -fsSL "https://nodejs.org/dist/v${NODE_TARGET_VERSION}/node-v${NODE_TARGET_VERSION}-linux-x64.tar.xz" -o /tmp/node.tar.xz
+tar -C /usr/local --strip-components=1 -xJf /tmp/node.tar.xz
+rm -f /tmp/node.tar.xz
 
 GO_VERSION="1.23.1"
 curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" -o /tmp/go.tar.gz
