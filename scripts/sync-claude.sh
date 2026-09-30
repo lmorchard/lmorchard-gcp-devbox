@@ -68,6 +68,19 @@ case "${ACTION}" in
     done
     shopt -u nullglob
 
+    # 4. MCP Servers from ~/.claude.json
+    if [[ -f "${HOME}/.claude.json" ]]; then
+      node -e '
+        const fs = require("fs");
+        try {
+          const cfg = JSON.parse(fs.readFileSync("'"${HOME}"'/.claude.json", "utf8"));
+          if (cfg.mcpServers) {
+            fs.writeFileSync("'"${TMP_DIR}"'/mcpServers.json", JSON.stringify(cfg.mcpServers, null, 2) + "\n");
+          }
+        } catch (_) {}
+      ' 2>/dev/null || true
+    fi
+
     BUNDLE="/tmp/claude-push-$$.tar.gz"
     tar --no-xattrs -C "${TMP_DIR}" -czf "${BUNDLE}" .
 
@@ -103,6 +116,19 @@ if [[ -d "\${TMP_REMOTE}/projects" ]]; then
       cp -r "\${pdir}/memory" "${DEV_HOME}/.claude/projects/\${pname}/"
     fi
   done
+fi
+
+# Sync user MCP servers into ~/.claude.json
+if [[ -f "\${TMP_REMOTE}/mcpServers.json" ]]; then
+  node -e '
+    const fs = require("fs");
+    const p = "'"${DEV_HOME}"'/.claude.json";
+    let cfg = {};
+    try { cfg = JSON.parse(fs.readFileSync(p, "utf8")); } catch (_) {}
+    const incoming = JSON.parse(fs.readFileSync("'"\${TMP_REMOTE}"'/mcpServers.json", "utf8"));
+    cfg.mcpServers = Object.assign({}, cfg.mcpServers || {}, incoming);
+    fs.writeFileSync(p, JSON.stringify(cfg, null, 2) + "\n");
+  ' 2>/dev/null || true
 fi
 
 rm -rf "\${TMP_REMOTE}"

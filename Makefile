@@ -6,8 +6,8 @@ PROJECT_ID ?= $(shell gcloud config get-value project 2>/dev/null)
 ZONE ?= us-central1-a
 REGION ?= $(shell echo $(ZONE) | sed 's/-[a-z]$$//')
 INSTANCE_NAME ?= wideboi-sandbox
-MACHINE_TYPE ?= e2-standard-4
-BOOT_DISK_SIZE ?= 50GB
+MACHINE_TYPE ?= e2-standard-8
+BOOT_DISK_SIZE ?= 100GB
 BOOT_DISK_TYPE ?= pd-balanced
 
 # Custom Image Configuration & Auto-Detection
