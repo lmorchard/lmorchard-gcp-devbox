@@ -68,12 +68,13 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high
+.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high update update-startup upgrade-wideboi push-secrets
 
 help:
 	@echo "wideboi-sandbox management commands:"
 	@echo "  make init-secrets  - Interactive wizard to populate GCP Secret Manager"
 	@echo "  make sync-secrets  - Push updated .env secrets & Claude memories to running VM"
+	@echo "  make push-secrets  - Push current Secret Manager secrets to running VM (restarts Wideboi)"
 	@echo "  make push-memories - Sync local Claude global context & project memories to VM"
 	@echo "  make pull-memories - Pull updated Claude memories & journal from VM to local Mac"
 	@echo "  make bake-image    - Pre-bake custom GCE image in '$(CUSTOM_IMAGE_FAMILY)' family"
@@ -83,6 +84,8 @@ help:
 	@echo "  make ssh           - SSH into the VM via Tailscale (or fallback to gcloud)"
 	@echo "  make web           - Open Wideboi's web UI over Tailscale in your browser"
 	@echo "  make upgrade-wideboi - Hot-upgrade running Wideboi server to latest rolling build"
+	@echo "  make update-startup  - Push local startup.sh to instance metadata (applies next boot)"
+	@echo "  make update          - Apply all pending updates (startup script, secrets, memories, Wideboi)"
 	@echo "  make status        - Check VM and startup progress"
 	@echo "  make logs          - Tail the startup script log"
 	@echo "  make stop          - Stop VM (compute billing paused, disk remains if kept)"
@@ -128,6 +131,12 @@ push-memories: check-project
 	TARGET="$${TS_IP:-$(TAILSCALE_HOSTNAME)}"; \
 	chmod +x scripts/sync-claude.sh; \
 	scripts/sync-claude.sh push "$$TARGET" "$(DEV_USER)"
+
+push-secrets: check-project
+	@TS_IP="$(call get-ts-ip)"; \
+	TARGET="$${TS_IP:-$(TAILSCALE_HOSTNAME)}"; \
+	chmod +x scripts/sync-secrets-to-vm.sh; \
+	scripts/sync-secrets-to-vm.sh "$$TARGET" "$(DEV_USER)" "$(PROJECT_ID)"
 
 pull-memories: check-project
 	@TS_IP="$(call get-ts-ip)"; \
@@ -453,6 +462,17 @@ upgrade-wideboi:
 		rm -rf \$$TMP_DIR; \
 		echo \"Wideboi upgraded to:\"; \
 		wideboi version'"
+
+# Push local startup.sh to instance metadata (takes effect on next boot)
+update-startup: check-project
+	gcloud compute instances add-metadata $(INSTANCE_NAME) \
+		--project=$(PROJECT_ID) \
+		--zone=$(ZONE) \
+		--metadata-from-file=startup-script=startup.sh
+
+# Apply all pending updates: startup script, secrets, memories, Wideboi
+update: check-project
+	@MAKE="$(MAKE)" scripts/update-devbox.sh "$(TAILSCALE_HOSTNAME)" "$(INSTANCE_NAME)" "$(PROJECT_ID)" "$(ZONE)" "$(DEV_USER)"
 
 # 6. Monitor startup logs (stream live serial port output, non-interactive)
 logs: check-project
