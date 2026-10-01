@@ -3,6 +3,9 @@
 # init-secrets.sh: Create Secret Manager entries in your GCP project.
 # Run this once on your local machine before spinning up your first VM.
 #
+# If SECRETS_CHANGED_FILE is set, that file is created when any secret is
+# created or updated (used by 'make update' to skip no-op VM syncs).
+#
 set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -22,6 +25,12 @@ if [[ -z "${PROJECT_ID}" ]]; then
 fi
 
 echo "==> Configuring secrets in project: ${PROJECT_ID}"
+
+mark_changed() {
+  if [[ -n "${SECRETS_CHANGED_FILE:-}" ]]; then
+    touch "${SECRETS_CHANGED_FILE}"
+  fi
+}
 
 # Enable Secret Manager API
 echo "==> Ensuring secretmanager.googleapis.com is enabled..."
@@ -53,6 +62,7 @@ store_secret() {
       --project="${PROJECT_ID}" \
       --data-file=- >/dev/null
     echo "  [UPDATED] Secret '${name}' updated."
+    mark_changed
   else
     echo "  [CREATING] Secret '${name}'..."
     printf "%s" "${val}" | gcloud secrets create "${name}" \
@@ -60,6 +70,7 @@ store_secret() {
       --data-file=- \
       --replication-policy="automatic" >/dev/null
     echo "  [CREATED] Secret '${name}' created."
+    mark_changed
   fi
 }
 
@@ -146,7 +157,9 @@ ENVS_DIR="${REPO_DIR}/workspace/envs"
 if compgen -G "${ENVS_DIR}/*.env" >/dev/null; then
   echo ""
   echo "Found repo .env files in ${ENVS_DIR}; packaging..."
-  ENVS_ARCHIVE=$(tar -C "${ENVS_DIR}" -czf - $(cd "${ENVS_DIR}" && ls *.env) | base64)
+  # Build a reproducible archive (no xattrs, no gzip timestamp) so unchanged
+  # files produce identical bytes and don't trigger a new secret version.
+  ENVS_ARCHIVE=$(COPYFILE_DISABLE=1 tar -C "${ENVS_DIR}" --no-xattrs --no-mac-metadata --format ustar -cf - $(cd "${ENVS_DIR}" && ls *.env) | gzip -n | base64)
   store_secret "workspace-repo-envs-b64" "${ENVS_ARCHIVE}" "Base64 tar.gz of repo .env files"
 else
   store_secret "workspace-repo-envs-b64" "" "Base64 tar.gz of repo .env files"
