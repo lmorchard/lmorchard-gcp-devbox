@@ -72,7 +72,7 @@ TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
 help:
 	@echo "wideboi-sandbox management commands:"
-	@echo "  make init-secrets  - Interactive wizard to populate GCP Secret Manager"
+	@echo "  make init-secrets  - Sync local secrets to GCP Secret Manager (skips unchanged; FORCE=1 rechecks all)"
 	@echo "  make sync-secrets  - Push updated .env secrets & Claude memories to running VM"
 	@echo "  make push-secrets  - Push current Secret Manager secrets to running VM (restarts Wideboi)"
 	@echo "  make push-memories - Sync local Claude global context & project memories to VM"
