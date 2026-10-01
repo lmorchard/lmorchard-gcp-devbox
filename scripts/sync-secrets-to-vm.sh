@@ -94,6 +94,12 @@ rm -f /tmp/secrets-bundle.tar.gz
 # 1. Update agent-env.sh
 mkdir -p "${DEV_HOME}/.profile.d"
 cp "\${TMP_EXTRACT}/profile.d/agent-env.sh" "${DEV_HOME}/.profile.d/agent-env.sh"
+# Re-add AUTO_STOP_HOURS from instance metadata, as startup.sh does
+AUTO_STOP_HOURS=\$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/auto-stop-hours" 2>/dev/null || true)
+AUTO_STOP_HOURS="\${AUTO_STOP_HOURS:-2}"
+if [[ "\${AUTO_STOP_HOURS}" -gt 0 ]]; then
+  echo "export AUTO_STOP_HOURS=\"\${AUTO_STOP_HOURS}\"" >> "${DEV_HOME}/.profile.d/agent-env.sh"
+fi
 
 # 2. Update Opencode files
 if [[ -f "\${TMP_EXTRACT}/opencode/vertex-sa-key.json" ]]; then
