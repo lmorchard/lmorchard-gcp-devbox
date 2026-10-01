@@ -6,7 +6,17 @@ PROJECT_ID ?= $(shell gcloud config get-value project 2>/dev/null)
 ZONE ?= us-central1-a
 REGION ?= $(shell echo $(ZONE) | sed 's/-[a-z]$$//')
 INSTANCE_NAME ?= wideboi-sandbox
-MACHINE_TYPE ?= e2-standard-8
+MACHINE_TYPE_LOW ?= e2-standard-4
+MACHINE_TYPE_MED ?= e2-standard-8
+MACHINE_TYPE_HIGH ?= e2-standard-16
+MACHINE_TYPE ?= $(MACHINE_TYPE_MED)
+
+# Ensure stripped values in case .env contains trailing whitespace or comments
+MACHINE_TYPE_LOW := $(strip $(MACHINE_TYPE_LOW))
+MACHINE_TYPE_MED := $(strip $(MACHINE_TYPE_MED))
+MACHINE_TYPE_HIGH := $(strip $(MACHINE_TYPE_HIGH))
+MACHINE_TYPE := $(strip $(MACHINE_TYPE))
+
 BOOT_DISK_SIZE ?= 100GB
 BOOT_DISK_TYPE ?= pd-balanced
 
@@ -58,7 +68,7 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images
+.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high
 
 help:
 	@echo "wideboi-sandbox management commands:"
@@ -77,6 +87,10 @@ help:
 	@echo "  make logs          - Tail the startup script log"
 	@echo "  make stop          - Stop VM (compute billing paused, disk remains if kept)"
 	@echo "  make start         - Start stopped VM"
+	@echo "  make resize        - Resize VM: make resize TYPE=<machine-type>"
+	@echo "  make resize-low    - Resize VM to $(MACHINE_TYPE_LOW) (low tier)"
+	@echo "  make resize-med    - Resize VM to $(MACHINE_TYPE_MED) (med tier)"
+	@echo "  make resize-high   - Resize VM to $(MACHINE_TYPE_HIGH) (high tier)"
 	@echo "  make down          - Destroy the VM (stops all compute & disk billing)"
 	@echo "  make destroy-infra - Destroy VM, VPC network, subnet, and runner service account"
 
@@ -454,7 +468,79 @@ start: check-project
 	@echo "    SSH:     make ssh (or: ssh $(DEV_USER)@$(TAILSCALE_HOSTNAME))"
 	@echo "    Web UI:  make web (or: http://$(TAILSCALE_HOSTNAME):8080)"
 
-# 10. Delete VM instance (stopping all compute/disk costs)
+# 10. Machine sizing & resize controls
+resize-low:
+	@$(MAKE) resize TYPE=$(MACHINE_TYPE_LOW)
+
+resize-med:
+	@$(MAKE) resize TYPE=$(MACHINE_TYPE_MED)
+
+resize-high:
+	@$(MAKE) resize TYPE=$(MACHINE_TYPE_HIGH)
+
+resize: check-project
+	@TARGET_TYPE="$(TYPE)"; \
+	if [ -z "$$TARGET_TYPE" ]; then \
+		echo "Error: Machine type not specified."; \
+		echo "Usage:   make resize TYPE=<machine-type> (e.g. make resize TYPE=c3d-standard-16)"; \
+		echo "Presets: make resize-low  ($(MACHINE_TYPE_LOW))"; \
+		echo "         make resize-med  ($(MACHINE_TYPE_MED))"; \
+		echo "         make resize-high ($(MACHINE_TYPE_HIGH))"; \
+		exit 1; \
+	fi; \
+	TARGET_TYPE=$$(echo "$$TARGET_TYPE" | tr -d '[:space:]'); \
+	echo "==> Target machine type: $$TARGET_TYPE"; \
+	if [ -f .env ]; then \
+		if grep -q '^MACHINE_TYPE=' .env; then \
+			sed -i.bak -E 's/^MACHINE_TYPE=.*/MACHINE_TYPE='$$TARGET_TYPE'/' .env && rm -f .env.bak; \
+		else \
+			echo "MACHINE_TYPE=$$TARGET_TYPE" >> .env; \
+		fi; \
+		echo "==> Updated MACHINE_TYPE=$$TARGET_TYPE in .env"; \
+	fi; \
+	STATUS=$$(gcloud compute instances describe $(INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --format="value(status)" 2>/dev/null || true); \
+	if [ -z "$$STATUS" ]; then \
+		echo "==> Instance '$(INSTANCE_NAME)' does not exist. Next 'make up' will launch as $$TARGET_TYPE."; \
+		exit 0; \
+	fi; \
+	CURRENT_TYPE=$$(gcloud compute instances describe $(INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --format="value(machineType.basename())" 2>/dev/null || true); \
+	if [ "$$CURRENT_TYPE" = "$$TARGET_TYPE" ]; then \
+		echo "==> Instance '$(INSTANCE_NAME)' is already $$TARGET_TYPE."; \
+		exit 0; \
+	fi; \
+	WAS_RUNNING=0; \
+	if [ "$$STATUS" = "RUNNING" ]; then \
+		WAS_RUNNING=1; \
+		echo "==> Instance '$(INSTANCE_NAME)' is currently RUNNING ($$CURRENT_TYPE)."; \
+		echo "==> Stopping instance to resize..."; \
+		gcloud compute instances stop $(INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) --quiet || { \
+			echo "❌ Failed to stop $(INSTANCE_NAME)"; exit 1; \
+		}; \
+	elif [ "$$STATUS" != "TERMINATED" ] && [ "$$STATUS" != "STOPPED" ]; then \
+		echo "❌ Instance '$(INSTANCE_NAME)' is in state '$$STATUS'. Wait until it is RUNNING or TERMINATED before resizing."; \
+		exit 1; \
+	fi; \
+	echo "==> Resizing instance from $$CURRENT_TYPE to $$TARGET_TYPE..."; \
+	gcloud compute instances set-machine-type $(INSTANCE_NAME) \
+		--project=$(PROJECT_ID) \
+		--zone=$(ZONE) \
+		--machine-type=$$TARGET_TYPE || { \
+		echo "❌ Failed to set machine type to $$TARGET_TYPE."; \
+		if [ "$$WAS_RUNNING" -eq 1 ]; then \
+			echo "==> Attempting to restart instance with original machine type $$CURRENT_TYPE..."; \
+			$(MAKE) start; \
+		fi; \
+		exit 1; \
+	}; \
+	echo "==> Successfully resized $(INSTANCE_NAME) to $$TARGET_TYPE."; \
+	if [ "$$WAS_RUNNING" -eq 1 ]; then \
+		echo "==> Restarting instance..."; \
+		$(MAKE) start; \
+	else \
+		echo "==> Instance is stopped. Run 'make start' when ready to resume."; \
+	fi
+
+# 11. Delete VM instance (stopping all compute/disk costs)
 down: check-project
 	@echo "==> Terminating $(INSTANCE_NAME)..."
 	@gcloud compute instances describe $(INSTANCE_NAME) --project=$(PROJECT_ID) --zone=$(ZONE) >/dev/null 2>&1 && \
@@ -463,7 +549,7 @@ down: check-project
 			--zone=$(ZONE) \
 			--quiet || echo "Instance '$(INSTANCE_NAME)' does not exist."
 
-# 11. Complete teardown of all devbox infrastructure (VPC, subnet, firewall, SA)
+# 12. Complete teardown of all devbox infrastructure (VPC, subnet, firewall, SA)
 destroy-infra: down
 	@echo "==> Deleting firewall rules for $(NETWORK)..."
 	@gcloud compute firewall-rules describe $(NETWORK)-allow-internal --project=$(PROJECT_ID) >/dev/null 2>&1 && \

@@ -100,6 +100,18 @@ This creates the service account with required IAM roles and spins up an `e2-sta
   make start
   ```
 
+- **Resize VM (In-place or Pre-launch)**:
+  ```bash
+  # Quick presets:
+  make resize-low    # e2-standard-4 (4 vCPU, 16 GB RAM)
+  make resize-med    # e2-standard-8 (8 vCPU, 32 GB RAM) - default
+  make resize-high   # e2-standard-16 (16 vCPU, 64 GB RAM)
+
+  # Custom machine type:
+  make resize TYPE=c3d-standard-16
+  ```
+  *(Updates `.env`. If the VM is currently running, it cleanly stops the instance, sets the new machine type, and restarts it with Tailscale reconnection).*
+
 - **Destroy VM (Drops running costs to $0.00)**:
   ```bash
   make down
@@ -120,7 +132,10 @@ Example `.env`:
 ```bash
 PROJECT_ID=my-sandbox-project
 ZONE=us-central1-a
-MACHINE_TYPE=e2-standard-4
+MACHINE_TYPE_LOW=e2-standard-4
+MACHINE_TYPE_MED=e2-standard-8
+MACHINE_TYPE_HIGH=e2-standard-16
+MACHINE_TYPE=e2-standard-8
 BOOT_DISK_SIZE=50GB
 DEV_USER=lmorchard
 TAILSCALE_HOSTNAME=wideboi-sandbox
