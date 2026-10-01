@@ -758,6 +758,7 @@ fi
 
 echo "================================================================"
 echo "Devbox Bootstrap Finished: $(date -u)"
-echo "Wideboi service status:"
-sudo -u "${DEV_USER}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" systemctl --user status wideboi.service --no-pager || true
+# Only report the state: 'systemctl status' would print the full command line,
+# leaking the websocket token into the startup log and serial console.
+echo "Wideboi service: $(sudo -u "${DEV_USER}" XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR}" systemctl --user is-active wideboi.service || true)"
 echo "================================================================"
