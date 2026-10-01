@@ -359,12 +359,22 @@ do-up: init-secrets ensure-network ensure-sa
 wait-ready:
 	@echo "==> Tracking bootstrap stages:"
 	@last_stage=""; \
+	started_at=$$(gcloud compute instances describe $(INSTANCE_NAME) \
+		--project=$(PROJECT_ID) \
+		--zone=$(ZONE) \
+		--format="value(lastStartTimestamp.date(format='%s'))" 2>/dev/null | cut -d. -f1); \
+	started_at=$${started_at:-0}; \
 	for i in $$(seq 1 120); do \
-		stage=$$(gcloud compute instances get-guest-attributes $(INSTANCE_NAME) \
+		attrs=$$(gcloud compute instances get-guest-attributes $(INSTANCE_NAME) \
 			--project=$(PROJECT_ID) \
 			--zone=$(ZONE) \
-			--query-path="devbox/stage" \
-			--format="value(value)" 2>/dev/null || true); \
+			--query-path="devbox/" \
+			--format="csv[no-heading](key,value)" 2>/dev/null || true); \
+		stage=$$(echo "$$attrs" | awk -F, '$$1 == "stage" { print $$2 }'); \
+		boot_epoch=$$(echo "$$attrs" | awk -F, '$$1 == "boot-epoch" { print $$2 }'); \
+		if [ -z "$$boot_epoch" ] || [ "$$boot_epoch" -lt "$$started_at" ]; then \
+			stage=""; \
+		fi; \
 		if [ -n "$$stage" ] && [ "$$stage" != "$$last_stage" ]; then \
 			echo "    [stage] $$stage"; \
 			last_stage="$$stage"; \
@@ -385,6 +395,13 @@ wait-ready:
 		elif [ "$$stage" = "ready-tailscale-failed" ]; then \
 			echo ""; \
 			echo "❌ [ERROR] Tailscale failed to connect during bootstrap. Run 'make logs' to inspect."; \
+			exit 1; \
+		elif [ "$$stage" = "ready-no-tailscale" ]; then \
+			echo "    [stage] bootstrap complete, but no Tailscale auth key is configured."; \
+			exit 0; \
+		elif [ "$${stage#failed-}" != "$$stage" ]; then \
+			echo ""; \
+			echo "❌ [ERROR] Bootstrap failed during stage '$${stage#failed-}'. Run 'make logs' to inspect."; \
 			exit 1; \
 		fi; \
 		sleep 3; \

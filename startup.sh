@@ -19,16 +19,33 @@ echo "================================================================"
 
 export DEBIAN_FRONTEND=noninteractive
 
-# Helper to report progress to instance guest attributes
-set_stage() {
-  local stage="$1"
-  echo "==> STAGE: ${stage}"
-  curl -s -X PUT --data "${stage}" \
+# Helpers to report progress to instance guest attributes
+set_guest_attr() {
+  curl -s -X PUT --data "$2" \
     -H "Metadata-Flavor: Google" \
-    "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/devbox/stage" 2>/dev/null || true
+    "http://metadata.google.internal/computeMetadata/v1/instance/guest-attributes/devbox/$1" 2>/dev/null || true
 }
 
+CURRENT_STAGE=""
+set_stage() {
+  CURRENT_STAGE="$1"
+  echo "==> STAGE: ${CURRENT_STAGE}"
+  set_guest_attr stage "${CURRENT_STAGE}"
+}
+
+# Report a crash as "failed-<stage>" so 'make wait-ready' can fail fast,
+# unless a terminal ready* stage was already reported.
+report_failure() {
+  local rc=$?
+  if [[ ${rc} -ne 0 && "${CURRENT_STAGE}" != ready* ]]; then
+    set_stage "failed-${CURRENT_STAGE}"
+  fi
+}
+trap report_failure EXIT
+
 set_stage "booting"
+# Lets 'make wait-ready' ignore stale stages left over from a previous boot
+set_guest_attr boot-epoch "$(date +%s)"
 
 TAILSCALE_HOSTNAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/tailscale-hostname" 2>/dev/null || true)
 if [[ -z "${TAILSCALE_HOSTNAME}" ]]; then
@@ -299,32 +316,34 @@ if ! command -v fuzzfetch >/dev/null 2>&1; then
 fi
 
 # 9. Set up User Dotfiles and Shell
-set_stage "setting-up-dotfiles"
-echo "==> [8/9] Setting up dotfiles and user environment..."
-sudo -u "${DEV_USER}" bash -c "
-  set -e
-  # Clone oh-my-zsh if missing
-  if [[ ! -d \"${DEV_HOME}/.oh-my-zsh\" ]]; then
-    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git \"${DEV_HOME}/.oh-my-zsh\"
-  fi
+if [[ ! -d "${DEV_HOME}/.dotfiles" ]]; then
+  set_stage "setting-up-dotfiles"
+  echo "==> [8/9] Setting up dotfiles and user environment..."
+  sudo -u "${DEV_USER}" bash -c "
+    set -e
+    # Clone oh-my-zsh if missing
+    if [[ ! -d \"${DEV_HOME}/.oh-my-zsh\" ]]; then
+      git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git \"${DEV_HOME}/.oh-my-zsh\"
+    fi
 
-  # Clone dotfiles repo
-  if [[ ! -d \"${DEV_HOME}/.dotfiles\" ]]; then
-    git clone https://github.com/lmorchard/dotfiles.git \"${DEV_HOME}/.dotfiles\"
-  fi
+    # Clone dotfiles repo
+    if [[ ! -d \"${DEV_HOME}/.dotfiles\" ]]; then
+      git clone https://github.com/lmorchard/dotfiles.git \"${DEV_HOME}/.dotfiles\"
+    fi
 
-  # Run dotfiles setup
-  if [[ -x \"${DEV_HOME}/.dotfiles/script/setup\" ]]; then
-    \"${DEV_HOME}/.dotfiles/script/setup\" || true
-  fi
+    # Run dotfiles setup
+    if [[ -x \"${DEV_HOME}/.dotfiles/script/setup\" ]]; then
+      \"${DEV_HOME}/.dotfiles/script/setup\" || true
+    fi
 
-  # Ensure git uses gh credential helper for github.com, overriding any stale vscode helper
-  git config --global credential.https://github.com.helper \"\"
-  git config --global --add credential.https://github.com.helper \"!gh auth git-credential\"
+    # Ensure git uses gh credential helper for github.com, overriding any stale vscode helper
+    git config --global --replace-all credential.https://github.com.helper \"\"
+    git config --global --add credential.https://github.com.helper \"!gh auth git-credential\"
 
-  # Ensure user bin dirs exist in PATH
-  mkdir -p \"${DEV_HOME}/bin\" \"${DEV_HOME}/.local/bin\"
-"
+    # Ensure user bin dirs exist in PATH
+    mkdir -p \"${DEV_HOME}/bin\" \"${DEV_HOME}/.local/bin\"
+  "
+fi
 
 # Inject API keys or Claude creds if present in Secret Manager
 CLAUDE_JSON=$(get_secret "claude-credentials-json")
@@ -428,6 +447,7 @@ if [[ -n "${REPOS_LIST}" ]]; then
     repo_name=$(basename "${repo}" .git)
     target_dir="${DEV_HOME}/devel/${repo_name}"
 
+    fresh_clone=0
     if [[ ! -d "${target_dir}" ]]; then
       echo "  -> Cloning ${repo} into ${target_dir}..."
       # If repo is "owner/repo", format as https://github.com/owner/repo.git
@@ -444,6 +464,7 @@ if [[ -n "${REPOS_LIST}" ]]; then
         fi
         continue
       }
+      fresh_clone=1
     fi
 
     # Check if a matching .env exists in staging
@@ -452,8 +473,8 @@ if [[ -n "${REPOS_LIST}" ]]; then
       install -m 0600 -o "${DEV_USER}" -g "${DEV_USER}" "/tmp/repo-envs/${repo_name}.env" "${target_dir}/.env"
     fi
 
-    # Run optional per-repo setup hook if present (script/setup, setup.sh, or make setup)
-    if [[ -d "${target_dir}" ]]; then
+    # Run optional per-repo setup hook on fresh clone (script/setup, setup.sh, or make setup)
+    if [[ "${fresh_clone}" -eq 1 ]]; then
       if [[ -x "${target_dir}/script/setup" ]]; then
         echo "  -> Running ${repo_name} script/setup..."
         sudo -u "${DEV_USER}" bash -c "cd '${target_dir}' && ./script/setup" || echo "  [WARN] ${repo_name} script/setup failed."
