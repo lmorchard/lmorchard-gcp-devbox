@@ -497,10 +497,11 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=%h
-ExecStart=${WIDEBOI_EXEC}
+# agent-env.sh is shell syntax (export, \$HOME), which EnvironmentFile= can't
+# parse, so source it in a wrapper shell before exec'ing wideboi.
+ExecStart=/bin/bash -c 'if [ -f %h/.profile.d/agent-env.sh ]; then . %h/.profile.d/agent-env.sh; fi; exec ${WIDEBOI_EXEC}'
 Restart=always
 RestartSec=5
-EnvironmentFile=-%h/.profile.d/agent-env.sh
 Environment="PATH=%h/.local/bin:%h/bin:%h/.opencode/bin:/usr/local/go/bin:/usr/local/bin:/usr/bin:/bin:/snap/bin"
 
 [Install]
