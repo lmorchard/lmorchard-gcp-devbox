@@ -138,6 +138,47 @@ This creates the service account with required IAM roles and spins up an `e2-sta
   make destroy-infra
   ```
 
+### 5. Disk Snapshots & Restore (Safety Checkpoints & Cold Storage)
+
+GCP differential compressed snapshots cost only **~$0.026/GB/month** (less than a third of persistent disk costs), capturing point-in-time state without interrupting running workloads.
+
+- **Create a Snapshot**:
+  ```bash
+  make snapshot
+  # Or target specific disks or custom names:
+  make snapshot DISK=data NAME=pre-upgrade
+  make snapshot DISK=boot
+  make snapshot DISK=all
+  ```
+  *(Default `DISK=auto` snapshots `devbox-data` if present, otherwise the boot disk. All snapshots are tagged with `managed-by=devbox`).*
+
+- **List Devbox Snapshots**:
+  ```bash
+  make list-snapshots
+  # Or list all GCP project snapshots:
+  make list-snapshots ALL=1
+  ```
+
+- **Restore From Snapshot**:
+  ```bash
+  make restore-snapshot SNAPSHOT=<snapshot-name>
+  ```
+  *(Automatically detects whether the snapshot is a boot disk or secondary data disk. For boot disks, provisions the VM directly from the snapshot via `--source-snapshot`. For data disks, recreates `devbox-data` in your zone from the snapshot).*
+
+- **Prune Older Snapshots**:
+  ```bash
+  make clean-snapshots
+  # Keep a custom number of recent snapshots:
+  make clean-snapshots KEEP=5 FORCE=1
+  ```
+
+- **Near-$0.00 Cold Storage Workflow**:
+  When stepping away for weeks or months:
+  1. `make snapshot DISK=data` (freezes `/home` and Docker caches into compressed storage at ~$1/mo)
+  2. `make down` (destroys VM, dropping compute costs to $0.00)
+  3. `make delete-data-disk` (deletes persistent disk, stopping persistent disk billing)
+  4. When returning: `make restore-snapshot SNAPSHOT=<snapshot-name>` followed by `make up`!
+
 ## Configuration
 
 Copy `.env.example` to `.env` (which is gitignored) to customize any settings:
