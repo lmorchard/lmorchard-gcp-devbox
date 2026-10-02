@@ -12,7 +12,7 @@ Accessed securely via **Tailscale** (no public IP, no firewall ports opened). Di
 - **Dotfiles & Shell**: Automatically clones and links [lmorchard/dotfiles](https://github.com/lmorchard/dotfiles) with oh-my-zsh and zsh shell.
 - **Secrets Management**: Pulls Tailscale auth keys, GitHub PAT, and agent keys securely on boot from GCP Secret Manager via instance service account.
 - **Docker CE**: Configured and enabled on boot, with the non-root developer user added to the `docker` group.
-- **Google Cloud & Evaluation Toolchain**: Pre-installed `gcloud` CLI, `kubectl`, `gke-gcloud-auth-plugin`, `kind`, Terraform 1.15.2, Argo CLI 4.1.4, `yq`, Node.js 22.16.0, and Python dev tooling.
+- **Google Cloud & Evaluation Toolchain**: Pre-installed `gcloud` CLI, `kubectl`, `gke-gcloud-auth-plugin`, `kind`, Terraform 1.15.2, Argo CLI 4.1.4, `yq`, Node.js 22.16.0, Python dev tooling (`uv`, pytest), and Playwright Chromium for browser testing.
 - **Workspace Auto-Setup**: Automatically runs `script/setup`, `setup.sh`, or `make setup` in cloned workspace repos.
 - **Rolling Wideboi**: Automatically pulls the latest Linux amd64 rolling release binary directly from GitHub.
 
