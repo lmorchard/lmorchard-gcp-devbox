@@ -93,8 +93,8 @@ Document snapshot management, restore flows, and cold storage cost optimization 
 - Document the "Cold Storage" workflow for dropping costs from ~$15-20/mo to ~$1/mo when pausing work.
 
 **Verification — automated:**
-- [ ] `make -n check-project` passes
-- [ ] `git status` cleanly tracks changes without untracked pollution
+- [x] `make -n check-project` passes — **verified**
+- [x] `git status` cleanly tracks changes without untracked pollution — **verified**
 
 **Verification — manual:**
-- [ ] Review documentation clarity and verify example commands work as expected.
+- [x] Review documentation clarity and verify example commands work as expected — **verified**
