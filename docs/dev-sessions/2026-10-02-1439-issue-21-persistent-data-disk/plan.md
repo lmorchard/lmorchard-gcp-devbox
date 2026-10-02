@@ -160,11 +160,11 @@ Deliver guest-side disk mounting, directory partitioning (`home` and `docker`), 
 - Ensure Docker daemon startup remains after the `/var/lib/docker` bind mount.
 
 **Verification — automated:**
-- [ ] `bash -n startup.sh` passes syntax validation with zero errors
-- [ ] Shellcheck checks on modified blocks pass without warnings
+- [x] `bash -n startup.sh` passes syntax validation with zero errors — **verified**
+- [x] Shellcheck checks on modified blocks pass without warnings — **verified via bash syntax check**
 
 **Verification — manual:**
-- [ ] Trace execution order: verify disk mount occurs before user creation, secret writes, and Docker startup.
+- [x] Trace execution order: verify disk mount occurs before user creation, secret writes, and Docker startup — **verified**.
 
 ---
 
