@@ -421,6 +421,10 @@ chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.profile.d"
 if ! grep -q "agent-env.sh" "${DEV_HOME}/.zshrc" 2>/dev/null; then
   echo '[ -f "$HOME/.profile.d/agent-env.sh" ] && source "$HOME/.profile.d/agent-env.sh"' >> "${DEV_HOME}/.zshrc"
 fi
+# Wideboi panes run bash, so source agent-env.sh there too
+if ! grep -q "agent-env.sh" "${DEV_HOME}/.bashrc" 2>/dev/null; then
+  echo '[ -f "$HOME/.profile.d/agent-env.sh" ] && source "$HOME/.profile.d/agent-env.sh"' >> "${DEV_HOME}/.bashrc"
+fi
 
 # 10. Clone Workspace Repos and copy environment files
 set_stage "cloning-workspace-repos"
