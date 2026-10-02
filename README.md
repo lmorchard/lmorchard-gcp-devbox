@@ -113,6 +113,14 @@ This creates the service account with required IAM roles and spins up an `e2-sta
   ```
   *(Updates `.env`. If the VM is currently running, it cleanly stops the instance, sets the new machine type, and restarts it with Tailscale reconnection).*
 
+- **Live Migration to Persistent Data Disk**:
+  ```bash
+  make migrate-to-data-disk
+  # Or with custom size / Docker migration:
+  make migrate-to-data-disk DATA_DISK_SIZE=200GB MIGRATE_DOCKER=1
+  ```
+  *(Hot-attaches the persistent secondary disk to your running VM, creates an automated safety snapshot of the current boot disk, formats the new disk with ext4, and non-destructively rsyncs all of `/home/${DEV_USER}`. Leaves your active workspace 100% untouched and running. Once completed, add `PERSISTENT_DATA_DISK=true` to `.env` so future boots mount the disk automatically).*
+
 - **Destroy VM (Drops compute costs to $0.00)**:
   ```bash
   make down

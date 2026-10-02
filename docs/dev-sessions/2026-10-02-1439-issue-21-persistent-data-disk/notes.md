@@ -28,3 +28,9 @@
   - Guards `authorized_keys` against duplicate key appending.
 - `README.md`:
   - Documented persistent data disk architecture, configuration options, and lifecycle commands.
+- `scripts/migrate-to-data-disk.sh` & `make migrate-to-data-disk`:
+  - Hot-attaches persistent data disk to running devbox VM without rebooting.
+  - Takes a safety snapshot of the boot disk prior to data copying.
+  - Formats and mounts data disk at `/mnt/disks/${DATA_DISK_NAME}`.
+  - Non-destructively rsyncs `/home/${DEV_USER}` (and optional Docker) to the persistent disk.
+  - Leaves the running workspace completely unmutated and operational.

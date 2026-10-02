@@ -29,6 +29,8 @@ DATA_DISK_SIZE ?= 150GB
 DATA_DISK_SIZE := $(strip $(DATA_DISK_SIZE))
 DATA_DISK_TYPE ?= pd-balanced
 DATA_DISK_TYPE := $(strip $(DATA_DISK_TYPE))
+MIGRATE_DOCKER ?= 0
+MIGRATE_DOCKER := $(strip $(MIGRATE_DOCKER))
 
 ifeq ($(PERSISTENT_DATA_DISK),true)
   DATA_DISK_FLAGS = --disk=name=$(DATA_DISK_NAME),device-name=$(DATA_DISK_NAME),mode=rw,auto-delete=no
@@ -84,7 +86,7 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high update update-startup upgrade-wideboi push-secrets ensure-data-disk delete-data-disk
+.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high update update-startup upgrade-wideboi push-secrets ensure-data-disk delete-data-disk migrate-to-data-disk
 
 help:
 	@echo "wideboi-sandbox management commands:"
@@ -111,6 +113,7 @@ help:
 	@echo "  make resize-med    - Resize VM to $(MACHINE_TYPE_MED) (med tier)"
 	@echo "  make resize-high   - Resize VM to $(MACHINE_TYPE_HIGH) (high tier)"
 	@echo "  make down          - Destroy the VM (stops all compute & disk billing)"
+	@echo "  make migrate-to-data-disk - Hot-attach persistent disk & non-destructively copy /home"
 	@echo "  make delete-data-disk - Delete persistent data disk ($(DATA_DISK_NAME)) in $(ZONE)"
 	@echo "  make destroy-infra - Destroy VM, VPC network, subnet, and runner service account"
 
@@ -628,7 +631,21 @@ down: check-project
 		echo "    To delete the disk, run: make delete-data-disk"; \
 	fi
 
-# 11b. Delete persistent secondary data disk
+# 11b. Migrate existing devbox to persistent data disk without destroying running instance
+migrate-to-data-disk: check-project
+	@chmod +x scripts/migrate-to-data-disk.sh
+	@scripts/migrate-to-data-disk.sh \
+		"$(TAILSCALE_HOSTNAME)" \
+		"$(INSTANCE_NAME)" \
+		"$(PROJECT_ID)" \
+		"$(ZONE)" \
+		"$(DEV_USER)" \
+		"$(DATA_DISK_NAME)" \
+		"$(DATA_DISK_SIZE)" \
+		"$(DATA_DISK_TYPE)" \
+		"$(MIGRATE_DOCKER)"
+
+# 11c. Delete persistent secondary data disk
 delete-data-disk: check-project
 	@if gcloud compute disks describe $(DATA_DISK_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) >/dev/null 2>&1; then \
 		if [ "$(FORCE)" != "1" ]; then \
