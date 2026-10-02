@@ -86,7 +86,7 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high update update-startup upgrade-wideboi push-secrets ensure-data-disk delete-data-disk migrate-to-data-disk
+.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high update update-startup upgrade-wideboi push-secrets ensure-data-disk delete-data-disk migrate-to-data-disk snapshot list-snapshots
 
 help:
 	@echo "wideboi-sandbox management commands:"
@@ -115,6 +115,8 @@ help:
 	@echo "  make down          - Destroy the VM (stops all compute & disk billing)"
 	@echo "  make migrate-to-data-disk - Hot-attach persistent disk & non-destructively copy /home"
 	@echo "  make delete-data-disk - Delete persistent data disk ($(DATA_DISK_NAME)) in $(ZONE)"
+	@echo "  make snapshot      - Create point-in-time disk snapshot (DISK=auto|boot|data|all, NAME=...)"
+	@echo "  make list-snapshots - List devbox snapshots with size and timestamps (ALL=1 for all)"
 	@echo "  make destroy-infra - Destroy VM, VPC network, subnet, and runner service account"
 
 # Verify GCP Project is set
@@ -665,7 +667,80 @@ delete-data-disk: check-project
 		echo "==> Persistent data disk '$(DATA_DISK_NAME)' does not exist in $(ZONE)."; \
 	fi
 
-# 12. Complete teardown of all devbox infrastructure (VPC, subnet, firewall, SA, data disk)
+# 13. Create point-in-time snapshot of devbox disk(s)
+snapshot: check-project
+	@DISK_TARGET="$(or $(strip $(DISK)),auto)"; \
+	TIMESTAMP=$$(date +%Y%m%d%H%M%S); \
+	BASE_NAME="$(or $(strip $(NAME)),$(INSTANCE_NAME))"; \
+	BASE_NAME=$$(echo "$$BASE_NAME" | tr '[:upper:]' '[:lower:]' | tr '_' '-' | sed -E 's/[^a-z0-9-]+//g'); \
+	BOOT_EXISTS=$$(gcloud compute instances describe $(INSTANCE_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null || true); \
+	DATA_EXISTS=$$(gcloud compute disks describe $(DATA_DISK_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null || true); \
+	if [ -z "$$BOOT_EXISTS" ] && [ -z "$$DATA_EXISTS" ]; then \
+		echo "Error: Neither instance '$(INSTANCE_NAME)' nor data disk '$(DATA_DISK_NAME)' exists in $(ZONE)."; \
+		exit 1; \
+	fi; \
+	DO_BOOT=0; \
+	DO_DATA=0; \
+	if [ "$$DISK_TARGET" = "boot" ]; then \
+		DO_BOOT=1; \
+	elif [ "$$DISK_TARGET" = "data" ]; then \
+		DO_DATA=1; \
+	elif [ "$$DISK_TARGET" = "all" ]; then \
+		[ -n "$$BOOT_EXISTS" ] && DO_BOOT=1; \
+		[ -n "$$DATA_EXISTS" ] && DO_DATA=1; \
+	else \
+		if [ -n "$$DATA_EXISTS" ]; then \
+			DO_DATA=1; \
+		elif [ -n "$$BOOT_EXISTS" ]; then \
+			DO_BOOT=1; \
+		fi; \
+	fi; \
+	if [ "$$DO_BOOT" -eq 1 ]; then \
+		if [ -z "$$BOOT_EXISTS" ]; then \
+			echo "Error: Cannot snapshot boot disk; instance '$(INSTANCE_NAME)' does not exist."; \
+			exit 1; \
+		fi; \
+		SNAP_NAME="$$BASE_NAME-boot-$$TIMESTAMP"; \
+		echo "==> Snapshotting boot disk '$(INSTANCE_NAME)' -> '$$SNAP_NAME'..."; \
+		gcloud compute disks snapshot $(INSTANCE_NAME) \
+			--project=$(PROJECT_ID) \
+			--zone=$(ZONE) \
+			--snapshot-names="$$SNAP_NAME" \
+			--labels="managed-by=devbox,instance=$(INSTANCE_NAME),disk-type=boot" || exit 1; \
+		echo "    Created boot snapshot: $$SNAP_NAME"; \
+	fi; \
+	if [ "$$DO_DATA" -eq 1 ]; then \
+		if [ -z "$$DATA_EXISTS" ]; then \
+			echo "Error: Cannot snapshot data disk; disk '$(DATA_DISK_NAME)' does not exist."; \
+			exit 1; \
+		fi; \
+		SNAP_NAME="$$BASE_NAME-data-$$TIMESTAMP"; \
+		echo "==> Snapshotting persistent data disk '$(DATA_DISK_NAME)' -> '$$SNAP_NAME'..."; \
+		gcloud compute disks snapshot $(DATA_DISK_NAME) \
+			--project=$(PROJECT_ID) \
+			--zone=$(ZONE) \
+			--snapshot-names="$$SNAP_NAME" \
+			--labels="managed-by=devbox,instance=$(INSTANCE_NAME),disk-type=data" || exit 1; \
+		echo "    Created data snapshot: $$SNAP_NAME"; \
+	fi; \
+	echo "==> Snapshot operation complete."
+
+# 14. List devbox snapshots
+list-snapshots: check-project
+	@if [ "$(ALL)" = "1" ]; then \
+		echo "==> All snapshots in project $(PROJECT_ID):"; \
+		FILTER_FLAG=""; \
+	else \
+		echo "==> Devbox-managed snapshots in $(PROJECT_ID):"; \
+		FILTER_FLAG="--filter=labels.managed-by=devbox"; \
+	fi; \
+	gcloud compute snapshots list \
+		--project=$(PROJECT_ID) \
+		$$FILTER_FLAG \
+		--sort-by="~creationTimestamp" \
+		--format="table(name,sourceDisk.basename():label=SOURCE_DISK,labels.disk-type:label=TYPE,diskSizeGb:label=DISK_GB,storageBytes.size(unit=B):label=STORAGE,creationTimestamp.date(format='%Y-%m-%d %H:%M'):label=CREATED,status)"
+
+# 15. Complete teardown of all devbox infrastructure (VPC, subnet, firewall, SA, data disk)
 destroy-infra: down
 	@if gcloud compute disks describe $(DATA_DISK_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) >/dev/null 2>&1; then \
 		$(MAKE) delete-data-disk FORCE=1; \
