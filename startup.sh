@@ -53,6 +53,91 @@ if [[ -z "${TAILSCALE_HOSTNAME}" ]]; then
 fi
 TAILSCALE_HOSTNAME="${TAILSCALE_HOSTNAME:-wideboi-sandbox}"
 
+# 0. Persistent Secondary Data Disk (Docker & User Home)
+PERSISTENT_DATA_DISK=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/persistent-data-disk" 2>/dev/null || echo "false")
+DATA_DISK_NAME=$(curl -s -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/attributes/data-disk-name" 2>/dev/null || echo "devbox-data")
+
+if [[ "${PERSISTENT_DATA_DISK}" == "true" ]]; then
+  set_stage "mounting-data-disk"
+  DISK_DEV="/dev/disk/by-id/google-${DATA_DISK_NAME}"
+  echo "==> Waiting for persistent data disk device ${DISK_DEV}..."
+  disk_found=0
+  for i in $(seq 1 30); do
+    if [[ -e "${DISK_DEV}" ]]; then
+      disk_found=1
+      break
+    fi
+    sleep 1
+  done
+
+  if [[ "${disk_found}" -ne 1 ]]; then
+    echo "❌ Persistent data disk device ${DISK_DEV} not found after 30s!"
+    exit 1
+  fi
+
+  # Format disk if unformatted
+  if ! blkid "${DISK_DEV}" >/dev/null 2>&1; then
+    echo "==> Formatting persistent disk ${DISK_DEV} with ext4..."
+    mkfs.ext4 -m 0 -E lazy_itable_init=0,lazy_journal_init=0,discard "${DISK_DEV}"
+  fi
+
+  MOUNT_POINT="/mnt/disks/${DATA_DISK_NAME}"
+  mkdir -p "${MOUNT_POINT}"
+  if ! mountpoint -q "${MOUNT_POINT}"; then
+    echo "==> Mounting ${DISK_DEV} at ${MOUNT_POINT}..."
+    mount -o discard,defaults "${DISK_DEV}" "${MOUNT_POINT}"
+  fi
+
+  # Ensure base mount is in /etc/fstab
+  DISK_UUID=$(blkid -s UUID -o value "${DISK_DEV}")
+  if ! grep -q "${DISK_UUID}" /etc/fstab; then
+    echo "UUID=${DISK_UUID} ${MOUNT_POINT} ext4 discard,defaults,nofail 0 2" >> /etc/fstab
+  fi
+
+  # Prepare top-level subdirectories for Docker and Home
+  mkdir -p "${MOUNT_POINT}/docker" "${MOUNT_POINT}/home"
+
+  # 1. Bind-mount /var/lib/docker
+  mkdir -p /var/lib/docker
+  if ! mountpoint -q /var/lib/docker; then
+    echo "==> Bind-mounting ${MOUNT_POINT}/docker to /var/lib/docker..."
+    mount --bind "${MOUNT_POINT}/docker" /var/lib/docker
+  fi
+  if ! grep -q " ${MOUNT_POINT}/docker " /etc/fstab; then
+    echo "${MOUNT_POINT}/docker /var/lib/docker none bind,nofail 0 0" >> /etc/fstab
+  fi
+
+  # 2. Inspect existing UID/GID of persistent home directory
+  DISK_UID=$(stat -c '%u' "${MOUNT_POINT}/home")
+  DISK_GID=$(stat -c '%g' "${MOUNT_POINT}/home")
+
+  # If home was already populated by a non-root user, align DEV_USER to match DISK_UID:DISK_GID
+  if [[ "${DISK_UID}" -ne 0 ]]; then
+    if id -u "${DEV_USER}" >/dev/null 2>&1; then
+      CURRENT_UID=$(id -u "${DEV_USER}")
+      if [[ "${CURRENT_UID}" -ne "${DISK_UID}" ]]; then
+        echo "==> Re-aligning user '${DEV_USER}' UID from ${CURRENT_UID} to ${DISK_UID} to match disk..."
+        usermod -u "${DISK_UID}" "${DEV_USER}" || true
+        groupmod -g "${DISK_GID}" "${DEV_USER}" 2>/dev/null || true
+      fi
+    else
+      echo "==> Creating user '${DEV_USER}' with UID ${DISK_UID} to match persistent home..."
+      groupadd -g "${DISK_GID}" "${DEV_USER}" 2>/dev/null || groupadd -f "${DEV_USER}"
+      useradd -u "${DISK_UID}" -g "${DISK_GID}" -s /bin/zsh -M "${DEV_USER}"
+    fi
+  fi
+
+  # 3. Bind-mount /home/${DEV_USER}
+  mkdir -p "${DEV_HOME}"
+  if ! mountpoint -q "${DEV_HOME}"; then
+    echo "==> Bind-mounting ${MOUNT_POINT}/home to ${DEV_HOME}..."
+    mount --bind "${MOUNT_POINT}/home" "${DEV_HOME}"
+  fi
+  if ! grep -q " ${MOUNT_POINT}/home " /etc/fstab; then
+    echo "${MOUNT_POINT}/home ${DEV_HOME} none bind,nofail 0 0" >> /etc/fstab
+  fi
+fi
+
 # 1. Base packages
 if ! command -v git >/dev/null 2>&1 || ! command -v zsh >/dev/null 2>&1 || ! command -v tmux >/dev/null 2>&1; then
   set_stage "installing-base-packages"
@@ -89,6 +174,14 @@ usermod -aG sudo "${DEV_USER}"
 if [[ ! -f "/etc/sudoers.d/90-${DEV_USER}" ]]; then
   echo "${DEV_USER} ALL=(ALL) NOPASSWD:ALL" > "/etc/sudoers.d/90-${DEV_USER}"
   chmod 0440 "/etc/sudoers.d/90-${DEV_USER}"
+fi
+
+# Ensure DEV_USER owns their home directory if newly mounted/formatted
+if [[ -d "${DEV_HOME}" ]]; then
+  DEV_UID=$(id -u "${DEV_USER}")
+  if [[ $(stat -c '%u' "${DEV_HOME}") -ne "${DEV_UID}" ]]; then
+    chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}"
+  fi
 fi
 
 # Enable systemd user lingering so user services/tmux stay alive after logout
@@ -158,7 +251,9 @@ SSH_PUBKEY=$(get_secret "devbox-ssh-pubkey")
 if [[ -n "${SSH_PUBKEY}" ]]; then
   echo "==> Configuring authorized_keys for '${DEV_USER}'..."
   mkdir -p "${DEV_HOME}/.ssh"
-  echo "${SSH_PUBKEY}" >> "${DEV_HOME}/.ssh/authorized_keys"
+  if ! grep -qxF "${SSH_PUBKEY}" "${DEV_HOME}/.ssh/authorized_keys" 2>/dev/null; then
+    echo "${SSH_PUBKEY}" >> "${DEV_HOME}/.ssh/authorized_keys"
+  fi
   chmod 700 "${DEV_HOME}/.ssh"
   chmod 600 "${DEV_HOME}/.ssh/authorized_keys"
   chown -R "${DEV_USER}:${DEV_USER}" "${DEV_HOME}/.ssh"
