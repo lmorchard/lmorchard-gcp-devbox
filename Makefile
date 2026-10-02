@@ -20,6 +20,22 @@ MACHINE_TYPE := $(strip $(MACHINE_TYPE))
 BOOT_DISK_SIZE ?= 100GB
 BOOT_DISK_TYPE ?= pd-balanced
 
+# Persistent Secondary Data Disk Configuration
+PERSISTENT_DATA_DISK ?= false
+PERSISTENT_DATA_DISK := $(strip $(PERSISTENT_DATA_DISK))
+DATA_DISK_NAME ?= devbox-data
+DATA_DISK_NAME := $(strip $(DATA_DISK_NAME))
+DATA_DISK_SIZE ?= 150GB
+DATA_DISK_SIZE := $(strip $(DATA_DISK_SIZE))
+DATA_DISK_TYPE ?= pd-balanced
+DATA_DISK_TYPE := $(strip $(DATA_DISK_TYPE))
+
+ifeq ($(PERSISTENT_DATA_DISK),true)
+  DATA_DISK_FLAGS = --disk=name=$(DATA_DISK_NAME),device-name=$(DATA_DISK_NAME),mode=rw,auto-delete=no
+else
+  DATA_DISK_FLAGS =
+endif
+
 # Custom Image Configuration & Auto-Detection
 CUSTOM_IMAGE_FAMILY ?= devbox-base
 CUSTOM_IMAGE_EXISTS := $(shell gcloud compute images describe-from-family $(CUSTOM_IMAGE_FAMILY) --project=$(PROJECT_ID) --format="value(name)" 2>/dev/null)
@@ -68,7 +84,7 @@ DEV_HOME = /home/$(DEV_USER)
 # Tailscale Hostname
 TAILSCALE_HOSTNAME ?= $(INSTANCE_NAME)
 
-.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high update update-startup upgrade-wideboi push-secrets
+.PHONY: help init-secrets sync-secrets push-memories pull-memories sync-memories up do-up down stop start status ssh web logs clean bake-image list-images clean-images resize resize-low resize-med resize-high update update-startup upgrade-wideboi push-secrets ensure-data-disk delete-data-disk
 
 help:
 	@echo "wideboi-sandbox management commands:"
@@ -95,6 +111,7 @@ help:
 	@echo "  make resize-med    - Resize VM to $(MACHINE_TYPE_MED) (med tier)"
 	@echo "  make resize-high   - Resize VM to $(MACHINE_TYPE_HIGH) (high tier)"
 	@echo "  make down          - Destroy the VM (stops all compute & disk billing)"
+	@echo "  make delete-data-disk - Delete persistent data disk ($(DATA_DISK_NAME)) in $(ZONE)"
 	@echo "  make destroy-infra - Destroy VM, VPC network, subnet, and runner service account"
 
 # Verify GCP Project is set
@@ -189,6 +206,24 @@ ensure-sa: check-project
 		--member="serviceAccount:$(SA_EMAIL)" \
 		--role="roles/secretmanager.secretAccessor" \
 		--condition=None --quiet >/dev/null
+
+# 3b. Persistent Data Disk Setup (creates disk if PERSISTENT_DATA_DISK=true)
+ensure-data-disk: check-project
+	@if [ "$(PERSISTENT_DATA_DISK)" = "true" ]; then \
+		if ! gcloud compute disks describe $(DATA_DISK_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) >/dev/null 2>&1; then \
+			echo "==> Creating persistent data disk '$(DATA_DISK_NAME)' ($(DATA_DISK_SIZE), $(DATA_DISK_TYPE)) in $(ZONE)..."; \
+			gcloud compute disks create $(DATA_DISK_NAME) \
+				--project=$(PROJECT_ID) \
+				--zone=$(ZONE) \
+				--size=$(DATA_DISK_SIZE) \
+				--type=$(DATA_DISK_TYPE) || { \
+				echo "❌ Failed to create persistent data disk $(DATA_DISK_NAME)"; \
+				exit 1; \
+			}; \
+		else \
+			echo "==> Persistent data disk '$(DATA_DISK_NAME)' already exists in $(ZONE)."; \
+		fi; \
+	fi
 
 # 3b. Pre-bake custom GCE image
 bake-image: check-project ensure-network
@@ -339,7 +374,7 @@ up: check-project
 	fi; \
 	$(MAKE) do-up
 
-do-up: init-secrets ensure-network ensure-sa
+do-up: init-secrets ensure-network ensure-sa ensure-data-disk
 	@echo "==> Launching $(INSTANCE_NAME) in $(ZONE)..."
 	@echo "    Using image: $(IMAGE_FAMILY) (project: $(IMAGE_PROJECT))"
 	gcloud compute instances create $(INSTANCE_NAME) \
@@ -351,11 +386,12 @@ do-up: init-secrets ensure-network ensure-sa
 		--boot-disk-size=$(BOOT_DISK_SIZE) \
 		--boot-disk-type=$(BOOT_DISK_TYPE) \
 		--boot-disk-auto-delete \
+		$(DATA_DISK_FLAGS) \
 		$(NET_FLAGS) \
 		--service-account=$(SA_EMAIL) \
 		--scopes=cloud-platform \
 		--metadata-from-file=startup-script=startup.sh \
-		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly,auto-stop-hours=$(AUTO_STOP_HOURS),dev-user=$(DEV_USER),tailscale-hostname=$(TAILSCALE_HOSTNAME)
+		--metadata=enable-oslogin=TRUE,enable-guest-attributes=TRUE,VmDnsSetting=ZonalOnly,auto-stop-hours=$(AUTO_STOP_HOURS),dev-user=$(DEV_USER),tailscale-hostname=$(TAILSCALE_HOSTNAME),persistent-data-disk=$(PERSISTENT_DATA_DISK),data-disk-name=$(DATA_DISK_NAME)
 	@echo ""
 	@echo "Instance created. Waiting for bootstrap to complete and Tailscale to connect..."
 	@$(MAKE) wait-ready
@@ -585,9 +621,38 @@ down: check-project
 			--project=$(PROJECT_ID) \
 			--zone=$(ZONE) \
 			--quiet || echo "Instance '$(INSTANCE_NAME)' does not exist."
+	@if [ "$(PERSISTENT_DATA_DISK)" = "true" ]; then \
+		echo ""; \
+		echo "ℹ️  Persistent data disk '$(DATA_DISK_NAME)' was detached and retained in $(ZONE)."; \
+		echo "    Compute billing is paused (\$0.00). Disk storage remains active."; \
+		echo "    To delete the disk, run: make delete-data-disk"; \
+	fi
 
-# 12. Complete teardown of all devbox infrastructure (VPC, subnet, firewall, SA)
+# 11b. Delete persistent secondary data disk
+delete-data-disk: check-project
+	@if gcloud compute disks describe $(DATA_DISK_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) >/dev/null 2>&1; then \
+		if [ "$(FORCE)" != "1" ]; then \
+			printf "⚠️  WARNING: This will permanently delete persistent data disk '$(DATA_DISK_NAME)' in $(ZONE).\n"; \
+			printf "All workspace repos, Docker caches, and data will be destroyed.\n"; \
+			printf "Are you sure? [y/N]: "; \
+			read -r answer; \
+			if [ "$$answer" != "y" ] && [ "$$answer" != "Y" ]; then \
+				echo "Aborted."; \
+				exit 1; \
+			fi; \
+		fi; \
+		echo "==> Deleting persistent data disk '$(DATA_DISK_NAME)' in $(ZONE)..."; \
+		gcloud compute disks delete $(DATA_DISK_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) --quiet || exit 1; \
+		echo "==> Persistent data disk '$(DATA_DISK_NAME)' deleted."; \
+	else \
+		echo "==> Persistent data disk '$(DATA_DISK_NAME)' does not exist in $(ZONE)."; \
+	fi
+
+# 12. Complete teardown of all devbox infrastructure (VPC, subnet, firewall, SA, data disk)
 destroy-infra: down
+	@if gcloud compute disks describe $(DATA_DISK_NAME) --zone=$(ZONE) --project=$(PROJECT_ID) >/dev/null 2>&1; then \
+		$(MAKE) delete-data-disk FORCE=1; \
+	fi
 	@echo "==> Deleting firewall rules for $(NETWORK)..."
 	@gcloud compute firewall-rules describe $(NETWORK)-allow-internal --project=$(PROJECT_ID) >/dev/null 2>&1 && \
 		gcloud compute firewall-rules delete $(NETWORK)-allow-internal --project=$(PROJECT_ID) --quiet || true
