@@ -72,11 +72,11 @@ Deliver targets to restore disks from snapshots and prune older snapshots.
   - Prompts for confirmation unless `FORCE=1`.
 
 **Verification — automated:**
-- [ ] `make -n do-up SOURCE_SNAPSHOT=test-snap PROJECT_ID=test-proj` contains `--source-snapshot=test-snap` and omits `--image-family`
-- [ ] `make -n clean-snapshots PROJECT_ID=test-proj` expands valid `gcloud compute snapshots delete` commands
+- [x] `make -n do-up SOURCE_SNAPSHOT=test-snap PROJECT_ID=test-proj` contains `--source-snapshot=test-snap` and omits `--image-family` — **verified**
+- [x] `make -n clean-snapshots PROJECT_ID=test-proj` expands valid `gcloud compute snapshots delete` commands — **verified**
 
 **Verification — manual:**
-- [ ] Review restore logic for proper confirmation prompts if disks or instances already exist.
+- [x] Review restore logic for proper confirmation prompts if disks or instances already exist — **verified**
 
 ---
 
