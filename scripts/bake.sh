@@ -215,6 +215,12 @@ rm -f /tmp/kind
 echo "==> Installing Tilt..."
 curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
 
+echo "==> Installing uv..."
+curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+
+echo "==> Installing Playwright Chromium and system deps..."
+sudo -u "${DEV_USER}" -H npx -y playwright install --with-deps chromium
+
 echo "==> Installing python evaluation tools (fuzzfetch, pytest, pyyaml)..."
 pip install --break-system-packages pytest PyYAML fuzzfetch || true
 

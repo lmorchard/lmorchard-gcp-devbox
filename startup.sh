@@ -310,6 +310,18 @@ if ! command -v tilt >/dev/null 2>&1; then
   curl -fsSL https://raw.githubusercontent.com/tilt-dev/tilt/master/scripts/install.sh | bash
 fi
 
+if ! command -v uv >/dev/null 2>&1; then
+  set_stage "installing-uv"
+  echo "==> Installing uv..."
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin UV_NO_MODIFY_PATH=1 sh
+fi
+
+if ! compgen -G "${DEV_HOME}/.cache/ms-playwright/chromium-*" >/dev/null; then
+  set_stage "installing-playwright"
+  echo "==> Installing Playwright Chromium and system deps..."
+  sudo -u "${DEV_USER}" -H npx -y playwright install --with-deps chromium || true
+fi
+
 if ! command -v fuzzfetch >/dev/null 2>&1; then
   echo "==> Installing python evaluation tools (fuzzfetch, pytest, pyyaml)..."
   pip install --break-system-packages pytest PyYAML fuzzfetch || true
