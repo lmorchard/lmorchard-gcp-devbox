@@ -7,6 +7,7 @@ Accessed securely via **Tailscale** (no public IP, no firewall ports opened). Di
 ## Architecture & Features
 
 - **Disposable & Recreatable**: Run `make up` to launch and bootstrap in ~2 minutes; run `make down` when finished.
+- **Optional Persistent Secondary Data Disk**: Preserve all of `/home/${DEV_USER}` (repos, agent sessions, shell history, dotfiles customizations, build caches) and `/var/lib/docker` (warm container image layers) across VM teardowns and recreations. Compute billing drops to $0.00 when destroyed, while your workspace resumes instantly on next `make up`.
 - **Tailscale SSH & Web Access**: Automatically registers on your tailnet with hostname `wideboi-sandbox` and Tailscale SSH enabled.
 - **Wideboi Background Server**: Configured as a persistent systemd user service (`loginctl enable-linger` enabled) with websocket web UI exposed on port 8080 over Tailscale.
 - **Dotfiles & Shell**: Automatically clones and links [lmorchard/dotfiles](https://github.com/lmorchard/dotfiles) with oh-my-zsh and zsh shell.
@@ -112,12 +113,19 @@ This creates the service account with required IAM roles and spins up an `e2-sta
   ```
   *(Updates `.env`. If the VM is currently running, it cleanly stops the instance, sets the new machine type, and restarts it with Tailscale reconnection).*
 
-- **Destroy VM (Drops running costs to $0.00)**:
+- **Destroy VM (Drops compute costs to $0.00)**:
   ```bash
   make down
   ```
+  *(If `PERSISTENT_DATA_DISK=true`, the secondary data disk is safely detached and preserved in your zone, while compute billing pauses at $0.00. If `PERSISTENT_DATA_DISK=false`, all disks are removed for literal $0.00 total cost).*
 
-- **Complete Project Cleanup (Tears down VM, VPC network, subnet, and runner service account)**:
+- **Delete Persistent Data Disk**:
+  ```bash
+  make delete-data-disk
+  ```
+  *(Prompts for confirmation before permanently deleting the secondary data disk and all stored `/home` and Docker data).*
+
+- **Complete Project Cleanup (Tears down VM, VPC network, subnet, runner SA, and data disk)**:
   ```bash
   make destroy-infra
   ```
@@ -139,4 +147,10 @@ MACHINE_TYPE=e2-standard-8
 BOOT_DISK_SIZE=50GB
 DEV_USER=lmorchard
 TAILSCALE_HOSTNAME=wideboi-sandbox
+
+# Persistent secondary data disk (optional)
+# PERSISTENT_DATA_DISK=true
+# DATA_DISK_NAME=devbox-data
+# DATA_DISK_SIZE=150GB
+# DATA_DISK_TYPE=pd-balanced
 ```

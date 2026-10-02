@@ -184,9 +184,9 @@ Document the feature and verify syntax and rule expansion across the repository.
 - Record session notes in `notes.md`.
 
 **Verification — automated:**
-- [ ] `bash -n startup.sh` passes
-- [ ] `make -n check-project` passes
-- [ ] `git status` cleanly tracks changes without untracked pollution
+- [x] `bash -n startup.sh` passes — **verified**
+- [x] `make -n check-project` passes — **verified**
+- [x] `git status` cleanly tracks changes without untracked pollution — **verified**
 
 **Verification — manual:**
-- [ ] Review documentation clarity and verify instructions match behavior.
+- [x] Review documentation clarity and verify instructions match behavior — **verified**.
